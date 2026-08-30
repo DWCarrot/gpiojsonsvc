@@ -1,0 +1,23 @@
+[package]
+name = "gpiojsonsvc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+smallvec = { version = "1.15.1", features = ["serde"] }
+thiserror = "2"
+futures = { version = "0.3" }
+pin-project-lite = "0.2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+quick-xml = { version = "0.40.1", features = ["serialize"] }
+inotify = "0.11.1"
+nix = { version = "0.30", features = ["event", "fs", "poll"] }
+
+[dev-dependencies]
+tempfile = "3"
