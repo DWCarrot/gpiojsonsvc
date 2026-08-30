@@ -43,40 +43,41 @@ Commands: default/`repl` (wizard), `init`, `get`, `set`, `raw`, `script`.
 
 The client connects before the first prompt and stays connected until `quit` / `exit` / Ctrl-D. Each cycle asks for `action`, then either walks protocol fields or reads raw JSON, prints the request, sends it, and prints the response.
 
-`help`, `quit`, and `exit` are local-only (no send). Actions are `init`, `get`, `set`, or `init raw` / `get raw` / `set raw`. Request ids are allocated as `"1"`, `"2"`, ... for the session unless a pasted full request already has `id`.
+`help`, `quit`, and `exit` are local-only (no send). Actions are `init`, `get`, `set`, or `raw`. Request ids are allocated as `"1"`, `"2"`, ... for the session unless a pasted request already has `id`.
 
 ```bash
 python3 tools/debug_client.py
-# action [init/get/set, init raw/get raw/set raw, help/quit]: init
+# action [init/get/set/raw, help/quit]: init
 # target name: LED
 # mode [input/output/trigger]: output
 # pin (space-split): GPIO1_B5
 # drive [push_pull/open_drain/open_source, empty=omit]: push_pull
 # add another target? [y/N]: n
 # (prints request JSON, sends, prints response)
-# action [init/get/set, init raw/get raw/set raw, help/quit]: set
+# action [init/get/set/raw, help/quit]: set
 # form [immediate/stepped]: immediate
 # target name: LED
 # value: 1
 # target name:
-# action [init/get/set, init raw/get raw/set raw, help/quit]: quit
+# action [init/get/set/raw, help/quit]: quit
 ```
 
 Empty field-by-field lines skip or re-prompt required fields. Optional fields (`bias` / `drive` / `edge`) are omitted when left empty. Validation errors (empty `init` target map, trigger with multiple pins, and similar) print and return to the action prompt without sending or closing the socket.
 
-### Raw JSON (`init raw` / `get raw` / `set raw`)
+### Raw JSON (`raw`)
 
-Paste JSON, then a blank line to end. The input may span multiple lines.
-
-If the object has a `target` field, it is treated as a request: missing `id` is filled from the allocator, and `action` is set to `init` / `get` / `set` to match the command. Otherwise the JSON is the `target` value only (init map, get string/array, set object or step array) and is wrapped with the allocated `id`.
+Paste a complete request object containing `action`, then a blank line to end. The input may span multiple lines. `action` must be `init`, `get`, or `set`; a missing or blank `id` is filled from the session allocator.
 
 ```
-action [...]: init raw
+action [...]: raw
 JSON (end with an empty line):
 {
-  "LED": {
-    "mode": "output",
-    "pin": "GPIO1_B5"
+  "action": "init",
+  "target": {
+    "LED": {
+      "mode": "output",
+      "pin": "GPIO1_B5"
+    }
   }
 }
 
@@ -131,7 +132,7 @@ Connect failures, missing socket files, and similar OS errors print `debug clien
 ## Request ids
 
 - The wizard and canned `init` / `get` / `set` allocate string ids `"1"`, `"2"`, `"3"`, ... unless you pass `--id` on a one-shot command.
-- Interactive `init raw` / `get raw` / `set raw` keep a pasted `id` on a full request; otherwise they use the allocator.
+- Interactive `raw` keeps a pasted `id`; a missing or blank `id` uses the allocator.
 - One-shot commands send a single request, so the default is almost always `"1"`.
 - One-shot `raw` and `script` send the `id` field as written. They do not rewrite it.
 
@@ -147,7 +148,9 @@ While waiting for a matching response, the client keeps reading. A line is:
 
 Events and other non-matching messages are printed with prefix `event:` or `unsolicited:` and then skipped. If the server closes before a matching non-event reply, the client raises `server closed the connection without a matching response`.
 
-One-shot commands disconnect as soon as the matching reply arrives, so they will not sit and print later trigger events. Use the wizard (leave the prompt open) or a `script` that ends with a request that stays blocked only until its own reply; lingering events after `ok` are not drained unless another request is in flight. For live edges, `init` a trigger in the wizard and keep the connection open; events that arrive **while** a later request is waiting, or that are buffered between prompts, are printed as `event:`.
+One-shot commands disconnect as soon as the matching reply arrives, so they will not sit and print later trigger events. Use the wizard (leave the prompt open) or a `script` that ends with a request that stays blocked only until its own reply.
+
+In the wizard, socket reads use `select`. While a field prompt is waiting, trigger `event` lines are printed as they arrive and the prompt is reprinted. One-shot `init` / `get` / `set` / `raw` and `script` wait on the socket only (stdin is not multiplexed). Events that arrive **while** a later request is waiting are still printed as `event:`.
 
 ## `init`
 

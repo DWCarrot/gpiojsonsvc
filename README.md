@@ -82,7 +82,7 @@ Full request and response shapes: [docs/protocol.md](docs/protocol.md). Layers a
 
 Usage, session rules, and examples: [docs/debug_client.md](docs/debug_client.md).
 
-With no subcommand (or `repl`), the client opens one socket and walks `init` / `get` / `set` field by field. Use `init raw` / `get raw` / `set raw` to paste multi-line JSON ended by a blank line.
+With no subcommand (or `repl`), the client opens one socket and walks `init` / `get` / `set` field by field. Use `raw` to paste a multi-line request object, including its `action`, ended by a blank line.
 
 ```bash
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock

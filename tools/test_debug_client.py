@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
 import json
+import os
+import socket
+import threading
+import time
 import unittest
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
@@ -239,6 +243,93 @@ class CorrelationTests(unittest.TestCase):
         self.assertTrue(dc.is_event_message(payload))
 
 
+class DebugClientSocketTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client_sock, self.server_sock = socket.socketpair()
+        self.client_sock.settimeout(0.5)
+        self.client = dc.DebugClient("unused", timeout=0.5)
+        self.client.sock = self.client_sock
+
+    def tearDown(self) -> None:
+        self.client.__exit__(None, None, None)
+        self.server_sock.close()
+
+    def test_read_still_works_after_drain_timeout(self) -> None:
+        self.client.drain_pending(timeout=0.01)
+        self.server_sock.sendall(b'{"id":"1","status":"ok"}\n')
+
+        response = self.client.send({"id": "1", "action": "init", "target": {}})
+
+        self.assertEqual(response, {"id": "1", "status": "ok"})
+
+    def test_partial_line_is_retained_across_drain_timeout(self) -> None:
+        self.server_sock.sendall(b'{"id":"1"')
+        self.client.drain_pending(timeout=0.01)
+        self.server_sock.sendall(b',"status":"ok"}\n')
+
+        response = self.client.send({"id": "1", "action": "init", "target": {}})
+
+        self.assertEqual(response, {"id": "1", "status": "ok"})
+
+
+class PromptLineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client_sock, self.server_sock = socket.socketpair()
+        self.stdin_r, self.stdin_w = os.pipe()
+        self.stdin_file = os.fdopen(self.stdin_r)
+        self.stdin_out = os.fdopen(self.stdin_w, "w")
+        self.client = dc.DebugClient("unused", timeout=2.0)
+        self.client.sock = self.client_sock
+
+    def tearDown(self) -> None:
+        self.client.__exit__(None, None, None)
+        self.server_sock.close()
+        self.stdin_file.close()
+        self.stdin_out.close()
+
+    def test_flushes_queued_event_before_reading_stdin(self) -> None:
+        self.server_sock.sendall(
+            b'{"id":"1","status":"event","event":{"target":"IRQ","type":"rising"}}\n'
+        )
+        self.stdin_out.write("init\n")
+        self.stdin_out.flush()
+        seen: list[tuple[str, dict]] = []
+
+        with patch.object(dc, "print_unsolicited", lambda kind, payload: seen.append((kind, payload))):
+            line = self.client.prompt_line("action: ", stdin=self.stdin_file)
+
+        self.assertEqual(line, "init")
+        self.assertEqual(seen[0][0], "event")
+        self.assertEqual(seen[0][1]["event"]["target"], "IRQ")
+
+    def test_prints_event_arriving_while_waiting_for_stdin(self) -> None:
+        seen: list[tuple[str, dict]] = []
+        result: dict[str, str] = {}
+
+        def worker() -> None:
+            with patch.object(
+                dc,
+                "print_unsolicited",
+                lambda kind, payload: seen.append((kind, payload)),
+            ):
+                result["line"] = self.client.prompt_line("action: ", stdin=self.stdin_file)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        time.sleep(0.05)
+        self.server_sock.sendall(
+            b'{"id":"1","status":"event","event":{"target":"IRQ","type":"falling"}}\n'
+        )
+        time.sleep(0.05)
+        self.stdin_out.write("get\n")
+        self.stdin_out.flush()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["line"], "get")
+        self.assertEqual(seen[0][0], "event")
+        self.assertEqual(seen[0][1]["event"]["type"], "falling")
+
+
 class EndToEndPayloadTests(unittest.TestCase):
     def test_smoke_flow_payloads_use_live_protocol_shape(self) -> None:
         allocator = dc.RequestIdAllocator()
@@ -416,16 +507,19 @@ class InteractiveBuilderTests(unittest.TestCase):
         with self.assertRaises(dc.InteractiveQuit):
             dc.build_request_interactively("9", self._feed(["quit"]))
 
-    def test_init_raw_bare_target_map_multiline(self) -> None:
+    def test_raw_init_request_multiline_fills_missing_id(self) -> None:
         request = dc.build_request_interactively(
             "10",
             self._feed(
                 [
-                    "init raw",
+                    "raw",
                     "{",
-                    '  "LED": {',
-                    '    "mode": "output",',
-                    '    "pin": "GPIO1_B5"',
+                    '  "action": "init",',
+                    '  "target": {',
+                    '    "LED": {',
+                    '      "mode": "output",',
+                    '      "pin": "GPIO1_B5"',
+                    "    }",
                     "  }",
                     "}",
                     "",
@@ -439,12 +533,12 @@ class InteractiveBuilderTests(unittest.TestCase):
             {"mode": "output", "pin": "GPIO1_B5"},
         )
 
-    def test_get_raw_full_request_keeps_id(self) -> None:
+    def test_raw_get_request_keeps_id_and_action(self) -> None:
         request = dc.build_request_interactively(
             "11",
             self._feed(
                 [
-                    "get raw",
+                    "raw",
                     '{"id":"user-9","action":"get","target":["IN","IRQ"]}',
                     "",
                 ]
@@ -455,13 +549,13 @@ class InteractiveBuilderTests(unittest.TestCase):
             {"id": "user-9", "action": "get", "target": ["IN", "IRQ"]},
         )
 
-    def test_set_raw_steps_array(self) -> None:
+    def test_raw_set_request_accepts_steps(self) -> None:
         request = dc.build_request_interactively(
             "12",
             self._feed(
                 [
-                    "set raw",
-                    '[{"LED":1},{"lag":100,"LED":0}]',
+                    "raw",
+                    '{"action":"set","target":[{"LED":1},{"lag":100,"LED":0}]}',
                     "",
                 ]
             ),
@@ -476,7 +570,7 @@ class InteractiveBuilderTests(unittest.TestCase):
             "13",
             self._feed(
                 [
-                    "init raw",
+                    "raw",
                     "{not json",
                     "",
                     "get",
@@ -486,20 +580,20 @@ class InteractiveBuilderTests(unittest.TestCase):
         )
         self.assertEqual(request, {"id": "13", "action": "get", "target": "IN"})
 
-    def test_init_raw_forces_action_on_full_request(self) -> None:
+    def test_raw_requires_action_in_payload(self) -> None:
         request = dc.build_request_interactively(
             "14",
             self._feed(
                 [
-                    "init raw",
+                    "raw",
                     '{"target":{"LED":{"mode":"output","pin":"GPIO1_B5"}}}',
                     "",
+                    "get",
+                    "IN",
                 ]
             ),
         )
-        self.assertEqual(request["id"], "14")
-        self.assertEqual(request["action"], "init")
-        self.assertEqual(request["target"]["LED"]["pin"], "GPIO1_B5")
+        self.assertEqual(request, {"id": "14", "action": "get", "target": "IN"})
 
 
 class InteractiveLoopTests(unittest.TestCase):
@@ -562,7 +656,7 @@ class InteractiveLoopTests(unittest.TestCase):
         self.assertEqual(payload["id"], "1")
         self.assertEqual(payload["action"], "init")
         self.assertEqual(payload["target"]["LED"]["pin"], "GPIO1_B5")
-        self.assertGreaterEqual(client.drain_pending.call_count, 1)
+        client.drain_pending.assert_not_called()
 
     def test_repl_help_and_quit_do_not_send(self) -> None:
         lines = iter(["help", "quit"])

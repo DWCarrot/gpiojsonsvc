@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import select
 import socket
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 
 DEFAULT_SOCKET_PATH = "/tmp/gpiojsonsvc.sock"
@@ -115,9 +116,7 @@ def _interactive_help() -> None:
     print("  init      configure named targets")
     print("  get       read target values")
     print("  set       write immediate or stepped values")
-    print("  init raw  paste init JSON (multi-line, end with an empty line)")
-    print("  get raw   paste get JSON (multi-line, end with an empty line)")
-    print("  set raw   paste set JSON (multi-line, end with an empty line)")
+    print("  raw       paste a request object (multi-line, end with an empty line)")
     print("  help      show this message")
     print("  quit      leave the session (also: exit, Ctrl-D)")
 
@@ -221,33 +220,21 @@ def _read_multiline_json(readline: Readline) -> Any:
         raise ValueError(f"invalid JSON: {error}") from error
 
 
-def _build_raw_request(action: str, request_id: str, parsed: Any) -> dict[str, Any]:
-    if isinstance(parsed, dict) and "target" in parsed:
-        req_id = parsed.get("id")
-        if not isinstance(req_id, str) or not req_id.strip():
-            req_id = request_id
-        payload = dict(parsed)
-        payload["id"] = req_id
-        payload["action"] = action
-        return payload
+def _build_raw_request(request_id: str, parsed: Any) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        raise ValueError("raw JSON must be a request object")
+    if parsed.get("action") not in ("init", "get", "set"):
+        raise ValueError("raw JSON action must be init, get, or set")
 
-    if action == "init":
-        if not isinstance(parsed, dict):
-            raise ValueError("init raw JSON must be an object (target map or full request)")
-        return build_init_request(parsed, request_id)
-
-    if action == "get":
-        if not isinstance(parsed, (str, list)):
-            raise ValueError("get raw JSON must be a string, array, or full request")
-        return build_get_request(parsed, request_id)
-
-    if not isinstance(parsed, (dict, list)):
-        raise ValueError("set raw JSON must be an object, array, or full request")
-    return build_set_request(parsed, request_id)
+    payload = dict(parsed)
+    req_id = payload.get("id")
+    if not isinstance(req_id, str) or not req_id.strip():
+        payload["id"] = request_id
+    return payload
 
 
-def _build_raw_interactively(action: str, request_id: str, readline: Readline) -> dict[str, Any]:
-    return _build_raw_request(action, request_id, _read_multiline_json(readline))
+def _build_raw_interactively(request_id: str, readline: Readline) -> dict[str, Any]:
+    return _build_raw_request(request_id, _read_multiline_json(readline))
 
 
 def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, Any]:
@@ -322,7 +309,7 @@ def build_request_interactively(
     ``readline`` defaults to :func:`input`. Empty optional fields are omitted.
     Invalid actions and validation errors print and return to the action prompt.
     ``help`` is local-only. ``quit`` / ``exit`` raise :class:`InteractiveQuit`.
-    ``init raw`` / ``get raw`` / ``set raw`` read multi-line JSON ended by a blank line.
+    ``raw`` reads a multi-line request object ended by a blank line.
     """
 
     if readline is None:
@@ -331,7 +318,7 @@ def build_request_interactively(
     while True:
         action = _prompt_line(
             readline,
-            "action [init/get/set, init raw/get raw/set raw, help/quit]: ",
+            "action [init/get/set/raw, help/quit]: ",
         ).lower()
         if not action:
             continue
@@ -341,19 +328,16 @@ def build_request_interactively(
             _interactive_help()
             continue
 
-        tokens = action.split()
-        raw_mode = len(tokens) == 2 and tokens[1] == "raw"
-        command = tokens[0] if len(tokens) in (1, 2) else ""
-        if command not in ("init", "get", "set") or (len(tokens) == 2 and not raw_mode):
-            print("expected init, get, set, init raw, get raw, set raw, help, or quit")
+        if action not in ("init", "get", "set", "raw"):
+            print("expected init, get, set, raw, help, or quit")
             continue
 
         try:
-            if raw_mode:
-                return _build_raw_interactively(command, request_id, readline)
-            if command == "init":
+            if action == "raw":
+                return _build_raw_interactively(request_id, readline)
+            if action == "init":
                 return _build_init_interactively(request_id, readline)
-            if command == "get":
+            if action == "get":
                 return _build_get_interactively(request_id, readline)
             return _build_set_interactively(request_id, readline)
         except ValueError as error:
@@ -400,39 +384,138 @@ class DebugClient:
         self.socket_path = socket_path
         self.timeout = timeout
         self.sock: socket.socket | None = None
-        self.reader = None
+        self._recv_buffer = bytearray()
 
     def __enter__(self) -> DebugClient:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
         sock.connect(self.socket_path)
+        sock.settimeout(None)
         self.sock = sock
-        self.reader = sock.makefile("r", encoding="utf-8", newline="\n")
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
-        if self.reader is not None:
-            self.reader.close()
-
         if self.sock is not None:
             self.sock.close()
+            self.sock = None
 
-    def _incoming_messages(self) -> Iterator[dict[str, Any]]:
-        if self.reader is None:
+    def _require_sock(self) -> socket.socket:
+        if self.sock is None:
             raise RuntimeError("client is not connected")
+        return self.sock
+
+    def _pop_complete_line(self) -> str | None:
+        newline = self._recv_buffer.find(b"\n")
+        if newline < 0:
+            return None
+        line = self._recv_buffer[: newline + 1]
+        del self._recv_buffer[: newline + 1]
+        return line.decode("utf-8")
+
+    def _socket_readable(self, timeout: float | None) -> bool:
+        sock = self._require_sock()
+        ready, _, _ = select.select([sock], [], [], timeout)
+        return sock in ready
+
+    def _recv_into_buffer(self) -> bool:
+        """Read one chunk into the recv buffer. Returns False on EOF."""
+
+        sock = self._require_sock()
+        try:
+            chunk = sock.recv(4096)
+        except BlockingIOError:
+            return True
+        if not chunk:
+            return False
+        self._recv_buffer.extend(chunk)
+        return True
+
+    def _take_eof_remainder(self) -> str | None:
+        if not self._recv_buffer:
+            return None
+        line = bytes(self._recv_buffer).decode("utf-8")
+        self._recv_buffer.clear()
+        return line
+
+    def _readline(self, timeout: float | None = None) -> str | None:
+        """Read one UTF-8 line, waiting with ``select`` until data or timeout.
+
+        ``timeout`` of ``None`` uses the client timeout. Partial lines stay
+        buffered across timeouts.
+        """
+
+        wait = self.timeout if timeout is None else timeout
+        while True:
+            line = self._pop_complete_line()
+            if line is not None:
+                return line
+            if not self._socket_readable(wait):
+                raise TimeoutError("timed out waiting for socket data")
+            if not self._recv_into_buffer():
+                return self._take_eof_remainder()
+
+    def _print_socket_line(self, response_line: str) -> None:
+        payload = json.loads(response_line)
+        kind: IncomingKind = "event" if is_event_message(payload) else "unsolicited"
+        print_unsolicited(kind, payload)
+
+    def _flush_socket_messages(self) -> None:
+        """Print complete messages that are already buffered or immediately readable."""
 
         while True:
-            response_line = self.reader.readline()
-            if not response_line:
+            line = self._pop_complete_line()
+            if line is not None:
+                self._print_socket_line(line)
+                continue
+            if not self._socket_readable(0):
+                return
+            if not self._recv_into_buffer():
+                remainder = self._take_eof_remainder()
+                if remainder is not None:
+                    self._print_socket_line(remainder)
+                raise RuntimeError("server closed the connection")
+
+    def prompt_line(self, prompt: str = "", *, stdin: TextIO | None = None) -> str:
+        """Read one stdin line while printing live socket events."""
+
+        sock = self._require_sock()
+        input_stream = sys.stdin if stdin is None else stdin
+        self._flush_socket_messages()
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        while True:
+            ready, _, _ = select.select([input_stream, sock], [], [])
+            if sock in ready:
+                if not self._recv_into_buffer():
+                    remainder = self._take_eof_remainder()
+                    if remainder is not None:
+                        self._print_socket_line(remainder)
+                    raise RuntimeError("server closed the connection")
+                while True:
+                    line = self._pop_complete_line()
+                    if line is None:
+                        break
+                    self._print_socket_line(line)
+                    sys.stdout.write(prompt)
+                    sys.stdout.flush()
+            if input_stream in ready:
+                typed = input_stream.readline()
+                if typed == "":
+                    raise EOFError
+                return typed.rstrip("\r\n")
+
+    def _incoming_messages(self) -> Iterator[dict[str, Any]]:
+        self._require_sock()
+        while True:
+            response_line = self._readline()
+            if response_line is None:
                 return
             yield json.loads(response_line)
 
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if self.sock is None or self.reader is None:
-            raise RuntimeError("client is not connected")
-
+        sock = self._require_sock()
         message = json.dumps(payload, separators=(",", ":")) + "\r\n"
-        self.sock.sendall(message.encode("utf-8"))
+        sock.sendall(message.encode("utf-8"))
 
         request_id = payload.get("id")
         if not isinstance(request_id, str) or not request_id.strip():
@@ -447,23 +530,15 @@ class DebugClient:
     def drain_pending(self, timeout: float = 1) -> None:
         """Print buffered events without waiting long for more traffic."""
 
-        if self.sock is None or self.reader is None:
-            raise RuntimeError("client is not connected")
-
-        previous = self.sock.gettimeout()
+        self._require_sock()
         try:
-            self.sock.settimeout(timeout)
             while True:
-                response_line = self.reader.readline()
-                if not response_line:
+                response_line = self._readline(timeout)
+                if response_line is None:
                     raise RuntimeError("server closed the connection")
-                payload = json.loads(response_line)
-                kind: IncomingKind = "event" if is_event_message(payload) else "unsolicited"
-                print_unsolicited(kind, payload)
+                self._print_socket_line(response_line)
         except TimeoutError:
             return
-        finally:
-            self.sock.settimeout(previous)
 
 
 def parse_json_object(raw: str, context: str) -> dict[str, Any]:
@@ -621,16 +696,15 @@ def run_repl(
     args: argparse.Namespace,
     readline: Readline | None = None,
 ) -> int:
-    if readline is None:
-        readline = input
-
     with DebugClient(args.socket, args.timeout) as client:
+        if readline is None:
+            readline = client.prompt_line
+
         print(f"Connected to {args.socket}")
-        print("Field-by-field requests on this session, or init/get/set raw for JSON.")
+        print("Field-by-field requests on this session, or raw for a JSON request.")
         print("Type help or quit.")
 
         while True:
-            client.drain_pending()
             try:
                 payload = build_request_interactively(
                     canned_request_id(None, args.id_allocator),
