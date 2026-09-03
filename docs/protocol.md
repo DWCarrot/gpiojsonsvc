@@ -113,9 +113,9 @@ Rules:
 - Later steps must include a non-zero `lag`. The delay is relative to the previous step.
 - Each step must contain at least one target value.
 - All steps are compiled before any GPIO write. If compilation fails, nothing is written.
-- Step 0 is applied immediately. The service then replies `ok`. Remaining steps run in the session reactor; they do not produce extra replies.
+- All steps are applied in order. Step 0 runs immediately; remaining steps wait for their `lag` in the session reactor. The service replies `ok` after the last step is applied. A later-step apply failure replies `error` instead.
 - A second `set` while a sequence is running returns `a set request is already in progress`. `get` remains allowed.
-- Disconnect cancels an in-progress sequence. Remaining steps are not applied, and outputs are not restored to a default.
+- Disconnect cancels an in-progress sequence. Remaining steps are not applied, the `set` reply is not sent, and outputs are not restored to a default.
 
 ## Responses
 

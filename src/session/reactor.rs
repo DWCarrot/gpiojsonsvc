@@ -409,7 +409,7 @@ where
 
         self.pending_set = Some(pending);
         self.state = SessionState::SetSequenceRunning;
-        self.reply(ResponseMessage::ok(request_id)).await
+        Ok(())
     }
 
     async fn handle_scheduled_wake(&mut self, token: u64) -> Result<(), W::Error> {
@@ -426,13 +426,16 @@ where
             return Ok(());
         }
 
+        let request_id = pending.request_id().to_owned();
         let Some(batch) = pending.batch() else {
             self.clear_sequence();
-            return Ok(());
+            return self.reply(ResponseMessage::ok(request_id)).await;
         };
         let Some(session) = self.initialized.as_ref() else {
             self.clear_sequence();
-            return Ok(());
+            return self
+                .reply(SessionError::NotInitialized.into_response(request_id))
+                .await;
         };
 
         if let Err(error) = apply_set_batch(session, batch) {
@@ -442,7 +445,7 @@ where
                 "failed to apply scheduled set step"
             );
             self.clear_sequence();
-            return Ok(());
+            return self.reply(error.into_response(request_id)).await;
         }
 
         let Some(pending) = self.pending_set.as_mut() else {
@@ -450,6 +453,7 @@ where
         };
         if !pending.advance() {
             self.clear_sequence();
+            return self.reply(ResponseMessage::ok(request_id)).await;
         }
         Ok(())
     }
@@ -1108,22 +1112,9 @@ mod tests {
             ResponseMessage::ok("set-steps")
         );
 
-        // Assert write history after all steps complete (not live chip XML mid-window).
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let blocks = loop {
-            write_log.flush();
-            let content = fs::read_to_string(log_file.path()).expect("read write log");
-            let blocks = parse_write_log_blocks(&content);
-            if blocks.len() >= 3 {
-                break blocks;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for 3 write-log dumps, got {}",
-                blocks.len()
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        };
+        write_log.flush();
+        let content = fs::read_to_string(log_file.path()).expect("read write log");
+        let blocks = parse_write_log_blocks(&content);
 
         assert_eq!(blocks.len(), 3, "one dump per set step");
         assert!(
@@ -1188,10 +1179,6 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(
-            recv_response(&mut responses).await,
-            ResponseMessage::ok("set-steps")
-        );
 
         send_request(
             &handle,
@@ -1211,6 +1198,10 @@ mod tests {
             }
             other => panic!("expected set-in-progress error, got {other:?}"),
         }
+        assert_eq!(
+            recv_response(&mut responses).await,
+            ResponseMessage::ok("set-steps")
+        );
 
         handle
             .sender()

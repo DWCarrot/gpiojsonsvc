@@ -103,12 +103,7 @@ struct Client {
 }
 
 impl Client {
-    async fn rpc(&mut self, request: &Value) -> Value {
-        let request_id = request
-            .get("id")
-            .and_then(Value::as_str)
-            .expect("request id")
-            .to_owned();
+    async fn send(&mut self, request: &Value) {
         let encoded = serde_json::to_string(request).expect("serialize request");
         self.writer
             .write_all(encoded.as_bytes())
@@ -116,7 +111,9 @@ impl Client {
             .expect("write request");
         self.writer.write_all(b"\n").await.expect("write newline");
         self.writer.flush().await.expect("flush request");
+    }
 
+    async fn recv_matching(&mut self, request_id: &str) -> Value {
         loop {
             let line = tokio::time::timeout(Duration::from_secs(3), self.lines.next_line())
                 .await
@@ -129,11 +126,21 @@ impl Client {
             }
             assert_eq!(
                 payload.get("id").and_then(Value::as_str),
-                Some(request_id.as_str()),
+                Some(request_id),
                 "uncorrelated response: {payload}"
             );
             return payload;
         }
+    }
+
+    async fn rpc(&mut self, request: &Value) -> Value {
+        let request_id = request
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_owned();
+        self.send(request).await;
+        self.recv_matching(&request_id).await
     }
 }
 
@@ -415,21 +422,19 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
     assert_eq!(get_in_again["status"], "pin_value");
     assert_eq!(get_in_again["value"], 0);
 
-    let stepped = client
-        .rpc(&json!({
-            "id": "5",
-            "action": "set",
-            "target": [
-                { "LED": 1 },
-                { "lag": 300, "LED": 0 }
-            ]
-        }))
-        .await;
+    let stepped_request = json!({
+        "id": "5",
+        "action": "set",
+        "target": [
+            { "LED": 1 },
+            { "lag": 300, "LED": 0 }
+        ]
+    });
+    client.send(&stepped_request).await;
+    wait_for_line_level(&harness.chip1, "13", 'H').await;
+    let stepped = client.recv_matching("5").await;
     assert_eq!(stepped["id"], "5");
     assert_eq!(stepped["status"], "ok");
-
-    wait_for_line_level(&harness.chip1, "13", 'H').await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
     wait_for_line_level(&harness.chip1, "13", 'L').await;
 
     let chip0_after =

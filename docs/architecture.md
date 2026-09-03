@@ -66,7 +66,7 @@ After a successful `init`, the reactor:
 - watches request fds for chips that have trigger lines
 - on edge events, maps `(chip_index, offset)` to the trigger target name and writes `status: event`
 
-Immediate `set` compiles a write batch and applies it, then replies `ok`. Stepped `set` compiles every step first, applies step 0, replies `ok`, then sleeps until each remaining accumulated lag. Disconnect aborts watchers and drops the initialized session without restoring output defaults.
+Immediate `set` compiles a write batch and applies it, then replies `ok`. Stepped `set` compiles every step first, applies step 0 immediately, sleeps until each remaining accumulated lag, and replies `ok` after the last step is applied. Disconnect aborts watchers and drops the initialized session without restoring output defaults.
 
 ## Mock backend
 

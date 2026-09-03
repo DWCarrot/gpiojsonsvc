@@ -224,7 +224,7 @@ Immediate map (several targets at once):
 python3 tools/debug_client.py set --target-json '{"LED":1,"BUS":5}'
 ```
 
-Stepped sequence (JSON array). Step 0 has no `lag`; later steps include `lag` in milliseconds relative to the previous step. The service replies `ok` after step 0; remaining steps run in the session reactor.
+Stepped sequence (JSON array). Step 0 has no `lag`; later steps include `lag` in milliseconds relative to the previous step. The service replies `ok` after the last step is applied.
 
 ```bash
 python3 tools/debug_client.py set --steps-json '[{"LED":1},{"lag":100,"LED":0},{"lag":200,"LED":1}]'

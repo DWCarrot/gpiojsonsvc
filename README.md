@@ -74,7 +74,7 @@ Each request has a non-empty `id` and an `action`. `init` must succeed once per 
 {"id":"3","action":"set","target":{"LED":1}}
 ```
 
-Combined `input`/`output` targets take up to eight unduplicated pins packed into a `u8` (first pin is the high bit). Trigger targets take a single pin. Stepped `set` is an array of objects; step 0 must not include `lag`, later steps must. The `ok` reply is sent after the first step; remaining lags run in the session reactor. Trigger events reuse the `init` request `id`.
+Combined `input`/`output` targets take up to eight unduplicated pins packed into a `u8` (first pin is the high bit). Trigger targets take a single pin. Stepped `set` is an array of objects; step 0 must not include `lag`, later steps must. The `ok` reply is sent after the last step is applied. Trigger events reuse the `init` request `id`.
 
 Full request and response shapes: [docs/protocol.md](docs/protocol.md). Layers and session flow: [docs/architecture.md](docs/architecture.md).
 

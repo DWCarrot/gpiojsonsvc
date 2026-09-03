@@ -25,9 +25,7 @@ pub struct PendingCompiledSteps(Vec<PendingCompiledStep>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingSetSequence {
     token: u64,
-    #[allow(dead_code)]
     request_id: String,
-    #[allow(dead_code)]
     sequence_started_at: Instant,
     steps: Vec<PendingCompiledStep>,
     next_step_index: usize,
@@ -88,6 +86,10 @@ impl PendingSetSequence {
 
     pub fn matches_token(&self, token: u64) -> bool {
         self.token == token
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
     }
 
     /// Batch for step `0`, which the caller applies before installing the sequence.
