@@ -9,6 +9,7 @@ use crate::protocol::request::RequestMessage;
 use crate::protocol::response::ResponseMessage;
 use crate::session::ReactorCommand;
 use crate::session::SessionHandle;
+use crate::system_event::SystemEvent;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -35,6 +36,7 @@ pub fn spawn_reader_task<S, E>(
     session: SessionHandle,
     mut reader: S,
     connection_info: String,
+    events: SystemEvent,
 ) -> JoinHandle<()>
 where
     S: Stream<Item = Result<RequestMessage, E>> + Send + Unpin + 'static,
@@ -43,30 +45,41 @@ where
     let tx = session.sender().clone();
     let session_id = session.session_id();
     tokio::spawn(async move {
+        let mut seen_seq = 0;
         loop {
-            match reader.next().await {
-                Some(Ok(request)) => {
-                    if tx
-                        .send(ReactorCommand::InboundRequest(request))
-                        .await
-                        .is_err()
-                    {
+            tokio::select! {
+                code = events.recv(&mut seen_seq) => {
+                    if code == SystemEvent::SHUTDOWN {
+                        session.shutdown();
                         break;
                     }
                 }
-                Some(Err(error)) => {
-                    tracing::warn!(
-                        session_id,
-                        connection = %connection_info,
-                        error = %error,
-                        "reader task failed; closing transport session"
-                    );
-                    let _ = tx.send(ReactorCommand::TransportClosed).await;
-                    break;
-                }
-                None => {
-                    let _ = tx.send(ReactorCommand::TransportClosed).await;
-                    break;
+                item = reader.next() => {
+                    match item {
+                        Some(Ok(request)) => {
+                            if tx
+                                .send(ReactorCommand::InboundRequest(request))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Some(Err(error)) => {
+                            tracing::warn!(
+                                session_id,
+                                connection = %connection_info,
+                                error = %error,
+                                "reader task failed; closing transport session"
+                            );
+                            let _ = tx.send(ReactorCommand::TransportClosed).await;
+                            break;
+                        }
+                        None => {
+                            let _ = tx.send(ReactorCommand::TransportClosed).await;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -98,6 +111,7 @@ mod tests {
 
     use super::ConnectionError;
     use super::spawn_reader_task;
+    use crate::system_event::SystemEvent;
 
     const SAMPLE_XML: &str = r#"<gpiochip id="gpiochip0" label="mock gpiochip0">
     <line id="0" name="line0" direction="input" bias="pull_up">L</line>
@@ -229,7 +243,12 @@ mod tests {
             },
         };
         let reader = stream::iter(vec![Result::<RequestMessage, TestSinkError>::Ok(request)]);
-        let reader_join = spawn_reader_task(handle, reader, "test://transport-reader".to_owned());
+        let reader_join = spawn_reader_task(
+            handle,
+            reader,
+            "test://transport-reader".to_owned(),
+            SystemEvent::new(),
+        );
 
         let response = tokio::time::timeout(Duration::from_secs(2), responses_rx.recv())
             .await
@@ -237,6 +256,56 @@ mod tests {
             .expect("response channel closed");
         assert_eq!(response, ResponseMessage::ok("init-1"));
 
+        tokio::time::timeout(Duration::from_secs(2), reader_join)
+            .await
+            .expect("reader task did not exit")
+            .expect("reader task failed");
+        tokio::time::timeout(Duration::from_secs(2), reactor_join)
+            .await
+            .expect("reactor task did not exit")
+            .expect("reactor task failed");
+    }
+
+    #[tokio::test]
+    async fn reader_task_exits_when_shutdown_is_notified() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let path = chip_file.path().to_str().expect("utf8 path").to_owned();
+        let config: std::sync::Arc<dyn SessionConfig> = std::sync::Arc::new(BTreeMap::from([
+            (
+                "gpiochip0:0".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path.clone(),
+                    line: 0,
+                },
+            ),
+            (
+                "gpiochip0:1".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path,
+                    line: 1,
+                },
+            ),
+        ]));
+
+        let (responses_tx, _responses_rx) = tokio::sync::mpsc::unbounded_channel();
+        let writer = TestResponseSink { tx: responses_tx };
+        let (handle, reactor_join) = SessionReactor::spawn(
+            43,
+            std::sync::Arc::new(MockBackend::new()),
+            config,
+            writer,
+            "test://transport-reader-cancel".to_owned(),
+        );
+
+        let events = SystemEvent::new();
+        let reader_join = spawn_reader_task(
+            handle,
+            futures::stream::pending::<Result<RequestMessage, TestSinkError>>(),
+            "test://transport-reader-cancel".to_owned(),
+            events.clone(),
+        );
+
+        events.emit(SystemEvent::SHUTDOWN);
         tokio::time::timeout(Duration::from_secs(2), reader_join)
             .await
             .expect("reader task did not exit")

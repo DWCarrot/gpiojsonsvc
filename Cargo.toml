@@ -17,7 +17,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 quick-xml = { version = "0.40.1", features = ["serialize"] }
 inotify = "0.11.1"
-nix = { version = "0.30", features = ["event", "fs", "poll"] }
+nix = { version = "0.30", features = ["event", "fs", "poll", "signal"] }
 
 [dev-dependencies]
 tempfile = "3"

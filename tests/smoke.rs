@@ -472,3 +472,40 @@ async fn uds_unmapped_pin_returns_correlated_error() {
 
     let _ = harness.child.start_kill();
 }
+
+#[tokio::test]
+async fn sigint_exits_while_a_client_is_connected() {
+    let mut harness = Harness::spawn_mock().await;
+    let mut client = harness.connect().await;
+    let init = client
+        .rpc(&json!({
+            "id": "init-1",
+            "action": "init",
+            "target": {
+                "OUT": { "mode": "output", "pin": "gpiochip0:7" }
+            }
+        }))
+        .await;
+    assert_eq!(init["status"], "ok");
+    let _connected = client;
+
+    let pid = harness.child.id().expect("child pid");
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .expect("send SIGINT");
+
+    let status = tokio::time::timeout(Duration::from_secs(3), harness.child.wait())
+        .await
+        .expect("service did not exit after SIGINT")
+        .expect("wait for service");
+    assert!(
+        status.success(),
+        "expected graceful exit after SIGINT, got {status:?}"
+    );
+    assert!(
+        !harness.socket.exists(),
+        "socket path should be removed on shutdown"
+    );
+}

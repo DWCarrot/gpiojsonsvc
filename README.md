@@ -62,7 +62,7 @@ gpiojsonsvc --mock /path/to/gpiojsonsvc.toml
 GPIOJSONSVC_MOCK_LOG=/tmp/mock-write.log gpiojsonsvc --mock /path/to/gpiojsonsvc.toml
 ```
 
-`--mock` is required until the real backend exists. `--mock` enables the file-backed mock. `GPIOJSONSVC_MOCK_LOG` also enables the mock backend write log at that path; it is an error if that variable is set without `--mock`. The process listens until SIGINT; it removes a stale socket file before bind and removes the socket on shutdown.
+`--mock` is required until the real backend exists. `--mock` enables the file-backed mock. `GPIOJSONSVC_MOCK_LOG` also enables the mock backend write log at that path; it is an error if that variable is set without `--mock`. The process listens until SIGINT, then closes live sessions, removes the socket, and exits. It also removes a stale socket file before bind.
 
 ## Protocol (summary)
 

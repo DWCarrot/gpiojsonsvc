@@ -9,6 +9,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use futures::Sink;
+use futures::SinkExt;
 use futures::ready;
 use pin_project_lite::pin_project;
 use tokio::io::Interest;
@@ -31,6 +32,7 @@ use crate::protocol::request::TargetSelector;
 use crate::protocol::response::EventPayload;
 use crate::protocol::response::EventType;
 use crate::protocol::response::ResponseMessage;
+use crate::system_event::SystemEvent;
 use crate::transport::ConnectionError;
 
 use super::command::ReactorCommand;
@@ -119,6 +121,11 @@ impl SessionHandle {
     pub fn sender(&self) -> &mpsc::Sender<ReactorCommand> {
         &self.tx
     }
+
+    /// Ask the reactor to close without waiting for channel capacity.
+    pub fn shutdown(&self) {
+        let _ = self.tx.try_send(ReactorCommand::Shutdown);
+    }
 }
 
 /// Session-local owner of GPIO state and request/reply dispatch.
@@ -162,6 +169,26 @@ where
             writer,
             connection_info,
             DEFAULT_COMMAND_CHANNEL_CAPACITY,
+            SystemEvent::new(),
+        )
+    }
+
+    pub fn spawn_with_events(
+        session_id: u64,
+        backend: Arc<B>,
+        config: Arc<dyn SessionConfig>,
+        writer: W,
+        connection_info: String,
+        events: SystemEvent,
+    ) -> (SessionHandle, JoinHandle<()>) {
+        Self::spawn_with_capacities(
+            session_id,
+            backend,
+            config,
+            writer,
+            connection_info,
+            DEFAULT_COMMAND_CHANNEL_CAPACITY,
+            events,
         )
     }
 
@@ -172,6 +199,7 @@ where
         writer: W,
         connection_info: String,
         command_capacity: usize,
+        events: SystemEvent,
     ) -> (SessionHandle, JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(command_capacity);
         let handle = SessionHandle {
@@ -192,11 +220,12 @@ where
             next_sequence_token: 1,
             gpio_watchers: Vec::new(),
         };
-        let join = tokio::spawn(reactor.run());
+        let join = tokio::spawn(reactor.run(events));
         (handle, join)
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, events: SystemEvent) {
+        let mut seen_seq = 0;
         loop {
             let next_deadline = self
                 .pending_set
@@ -205,6 +234,12 @@ where
             let wake_token = self.pending_set.as_ref().map(PendingSetSequence::token);
 
             tokio::select! {
+                code = events.recv(&mut seen_seq) => {
+                    if code == SystemEvent::SHUTDOWN {
+                        self.begin_close();
+                        break;
+                    }
+                }
                 cmd = self.rx.recv() => {
                     match cmd {
                         Some(cmd) => {
@@ -227,6 +262,7 @@ where
                 }
             }
         }
+        let _ = self.writer.close().await;
         self.state = SessionState::Closed;
     }
 
@@ -1286,6 +1322,46 @@ mod tests {
             .await
             .expect("close");
 
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("reactor did not exit")
+            .expect("reactor join");
+    }
+
+    #[tokio::test]
+    async fn shutdown_event_ends_the_reactor_task() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let path = chip_file.path().to_str().expect("utf8 path").to_owned();
+        let config: Arc<dyn super::SessionConfig> = Arc::new(BTreeMap::from([
+            (
+                "gpiochip0:0".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path.clone(),
+                    line: 0,
+                },
+            ),
+            (
+                "gpiochip0:2".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path,
+                    line: 2,
+                },
+            ),
+        ]));
+        let (responses_tx, _responses_rx) = tokio::sync::mpsc::unbounded_channel();
+        let writer = TestResponseSink { tx: responses_tx };
+        let events = crate::system_event::SystemEvent::new();
+        let (_handle, join) = SessionReactor::spawn_with_capacities(
+            1,
+            Arc::new(MockBackend::new()),
+            config,
+            writer,
+            "test://reactor".to_owned(),
+            32,
+            events.clone(),
+        );
+
+        events.emit(crate::system_event::SystemEvent::SHUTDOWN);
         tokio::time::timeout(Duration::from_secs(2), join)
             .await
             .expect("reactor did not exit")

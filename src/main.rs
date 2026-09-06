@@ -5,6 +5,7 @@ mod gpio;
 mod protocol;
 mod scheduler;
 mod session;
+mod system_event;
 mod transport;
 
 fn main() {

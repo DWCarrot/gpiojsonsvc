@@ -4,7 +4,9 @@ use crate::gpio::Backend;
 use crate::gpio::mock::MockBackend;
 use crate::gpio::mock::MockChipSnapshot;
 use crate::session::SessionConfig;
+use crate::session::SessionHandle;
 use crate::session::SessionReactor;
+use crate::system_event::SystemEvent;
 use crate::transport::Connection;
 use crate::transport::ServerConfig;
 use crate::transport::spawn_reader_task;
@@ -14,14 +16,18 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::future::Future;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 /// Environment variable that enables the mock backend write log.
 pub const MOCK_LOG_ENV_VAR: &str = "GPIOJSONSVC_MOCK_LOG";
@@ -181,7 +187,7 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
                 },
                 Arc::new(config.service),
             );
-            runtime.run().await
+            runtime.run_until(shutdown_signal()?).await
         }
     }
 }
@@ -245,58 +251,118 @@ impl<B: Backend + 'static> ServiceRuntime<B> {
         }
     }
 
-    pub async fn run(self) -> Result<(), AppError> {
-        self.run_until(async {
-            tokio::signal::ctrl_c().await.ok();
-        })
-        .await
-    }
-
     pub async fn run_until(self, shutdown: impl Future<Output = ()>) -> Result<(), AppError> {
-        let (listener, _bound) = BoundSocket::bind(&self.transport.socket_path)?;
+        let (listener, bound) = BoundSocket::bind(&self.transport.socket_path)?;
         tracing::info!(socket = %self.transport.socket_path, "uds listener started");
 
+        let events = SystemEvent::new();
+        let mut sessions = Vec::new();
         tokio::pin!(shutdown);
+        let mut result = Ok(());
         loop {
             tokio::select! {
+                biased;
                 _ = &mut shutdown => {
                     tracing::info!("shutdown requested");
                     break;
                 }
                 accepted = listener.accept() => {
-                    let (stream, _addr) = accepted?;
-                    self.spawn_session(stream);
+                    match accepted {
+                        Ok((stream, _addr)) => {
+                            self.spawn_session(stream, &events, &mut sessions);
+                        }
+                        Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                        Err(err) => {
+                            tracing::error!(error = %err, "listener accept failed");
+                            result = Err(err.into());
+                            break;
+                        }
+                    }
                 }
             }
         }
 
-        Ok(())
+        drop(listener);
+        drop(bound);
+        close_sessions(sessions, &events).await;
+        result
     }
 
-    fn spawn_session(&self, stream: UnixStream) {
+    fn spawn_session(
+        &self,
+        stream: UnixStream,
+        events: &SystemEvent,
+        sessions: &mut Vec<LiveSession>,
+    ) {
         let connection = UdsConnection::from_stream(stream);
         let connection_info = connection.connection_info();
         let (writer, reader) = connection.split();
 
         let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
-        let (handle, reactor_join) = SessionReactor::spawn(
+        let (handle, reactor_join) = SessionReactor::spawn_with_events(
             session_id,
             self.backend.clone(),
             self.session_config.clone(),
             writer,
             connection_info.clone(),
+            events.clone(),
         );
-        let reader_join = spawn_reader_task(handle, reader, connection_info.clone());
+        let reader_join = spawn_reader_task(
+            handle.clone(),
+            reader,
+            connection_info.clone(),
+            events.clone(),
+        );
 
-        tokio::spawn(async move {
-            let _ = reader_join.await;
-            let _ = reactor_join.await;
-            tracing::debug!(
-                session_id,
-                connection = %connection_info,
-                "session tasks completed"
-            );
+        sessions.push(LiveSession {
+            handle,
+            reader: reader_join,
+            reactor: reactor_join,
+            connection_info,
+            session_id,
         });
+    }
+}
+
+/// How long to wait for sessions to finish after shutdown before aborting them.
+const SESSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
+struct LiveSession {
+    handle: SessionHandle,
+    reader: JoinHandle<()>,
+    reactor: JoinHandle<()>,
+    connection_info: String,
+    session_id: u64,
+}
+
+async fn close_sessions(sessions: Vec<LiveSession>, events: &SystemEvent) {
+    tracing::info!(sessions = sessions.len(), "closing sessions");
+    events.emit(SystemEvent::SHUTDOWN);
+    for session in &sessions {
+        session.handle.shutdown();
+    }
+
+    let deadline = Instant::now() + SESSION_SHUTDOWN_GRACE;
+    for session in sessions {
+        let session_id = session.session_id;
+        let connection = session.connection_info;
+        join_with_deadline(session.reader, deadline).await;
+        join_with_deadline(session.reactor, deadline).await;
+        tracing::debug!(
+            session_id,
+            connection = %connection,
+            "session tasks completed"
+        );
+    }
+}
+
+async fn join_with_deadline(mut handle: JoinHandle<()>, deadline: Instant) {
+    tokio::select! {
+        _ = &mut handle => {}
+        _ = tokio::time::sleep_until(deadline) => {
+            handle.abort();
+            let _ = handle.await;
+        }
     }
 }
 
@@ -332,6 +398,22 @@ fn cleanup_socket_if_exists(path: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn shutdown_signal() -> Result<impl Future<Output = ()>, AppError> {
+    use tokio::signal::unix::signal;
+    use tokio::signal::unix::SignalKind;
+
+    let mut sigint = signal(SignalKind::interrupt()).map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGINT: {err}")))?;
+    let mut sigterm = signal(SignalKind::terminate()).map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGTERM: {err}")))?;
+    Ok(
+        async move {
+            tokio::select! {
+                _ = sigint.recv() => tracing::debug!(signal = "SIGINT", "received shutdown signal"),
+                _ = sigterm.recv() => tracing::debug!(signal = "SIGTERM", "received shutdown signal"),
+            }
+        }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -340,6 +422,9 @@ mod tests {
     use std::ffi::OsString;
 
     use tempfile::TempDir;
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::oneshot;
 
     use super::AppConfig;
@@ -649,5 +734,85 @@ socket = "{socket}"
         shutdown_tx.send(()).expect("send shutdown");
         join.await.expect("runtime task").expect("runtime shutdown");
         assert!(!stale.exists());
+    }
+
+    #[tokio::test]
+    async fn run_until_closes_connected_clients_on_shutdown() {
+        let dir = TempDir::new().expect("tempdir");
+        let socket = dir.path().join("gpiojsonsvc.sock");
+        let xml = dir.path().join("gpiochip0.xml");
+        fs::write(&xml, SAMPLE_XML).expect("write xml");
+        let service = write_toml(
+            &dir,
+            socket.to_str().expect("utf8"),
+            xml.to_str().expect("utf8"),
+            7,
+        );
+        validate_mock_chip_files(&service).expect("valid mock files");
+
+        let socket_path = socket.to_str().expect("utf8").to_owned();
+        let runtime = super::ServiceRuntime::new(
+            std::sync::Arc::new(MockBackend::new()),
+            ServerConfig {
+                socket_path: socket_path.clone(),
+            },
+            std::sync::Arc::new(service),
+        );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let join = tokio::spawn(async move {
+            runtime
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if socket.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("listener did not bind");
+
+        let mut client = tokio::net::UnixStream::connect(&socket)
+            .await
+            .expect("connect");
+        client
+            .write_all(
+                br#"{"id":"init-1","action":"init","target":{"OUT":{"mode":"output","pin":"gpiochip0:7"}}}"#,
+            )
+            .await
+            .expect("write init");
+        client.write_all(b"\n").await.expect("write newline");
+
+        let mut line = String::new();
+        {
+            let mut reader = tokio::io::BufReader::new(&mut client);
+            tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+                .await
+                .expect("init reply timed out")
+                .expect("read init reply");
+        }
+        assert!(line.contains("\"status\":\"ok\""), "{line}");
+
+        shutdown_tx.send(()).expect("send shutdown");
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("runtime did not stop while a client was connected")
+            .expect("runtime task")
+            .expect("runtime shutdown");
+        assert!(!socket.exists());
+
+        let mut buf = [0u8; 8];
+        let n = tokio::time::timeout(Duration::from_secs(1), client.read(&mut buf))
+            .await
+            .expect("client read timed out")
+            .expect("client read");
+        assert_eq!(n, 0);
     }
 }
