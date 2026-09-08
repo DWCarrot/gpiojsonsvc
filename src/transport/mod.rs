@@ -45,6 +45,11 @@ where
     let tx = session.sender().clone();
     let session_id = session.session_id();
     tokio::spawn(async move {
+        tracing::debug!(
+            session_id = %session_id,
+            connection = %connection_info,
+            "reader started"
+        );
         let mut seen_seq = 0;
         loop {
             tokio::select! {
@@ -83,6 +88,11 @@ where
                 }
             }
         }
+        tracing::debug!(
+            session_id = %session_id,
+            connection = %connection_info,
+            "reader ended"
+        );
     })
 }
 

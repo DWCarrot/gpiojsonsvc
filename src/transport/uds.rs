@@ -145,17 +145,20 @@ fn map_lines_codec_error(error: LinesCodecError) -> UdsConnectionError {
 }
 
 fn describe_connection(stream: &UnixStream) -> String {
-    let local = stream
-        .local_addr()
-        .ok()
-        .and_then(|addr| addr.as_pathname().map(|path| path.display().to_string()))
-        .unwrap_or_else(|| "unnamed".to_owned());
-    let peer = stream
-        .peer_addr()
-        .ok()
-        .and_then(|addr| addr.as_pathname().map(|path| path.display().to_string()))
-        .unwrap_or_else(|| "unnamed".to_owned());
-    format!("uds local={local} peer={peer}")
+    match stream.peer_cred() {
+        Ok(cred) => {
+            let pid = cred
+                .pid()
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "unknown".to_owned());
+            format!(
+                "uds@peer={{pid={pid}, uid={}, gid={}}}",
+                cred.uid(),
+                cred.gid()
+            )
+        }
+        Err(_) => "uds@peer=unknown".to_owned(),
+    }
 }
 
 #[cfg(test)]

@@ -22,7 +22,7 @@ flowchart LR
 - `src/main.rs` parses CLI (`--mock` and an optional config path), loads TOML, starts a multi-thread Tokio runtime, and calls `app::run`.
 - `src/config.rs` discovers the file (positional path, then `GPIOJSONSVC_CONFIG`, then `gpiojsonsvc.toml`) and validates socket plus `[pins.gpiod]`.
 - `src/app.rs` selects the backend. `--mock` constructs `MockBackend`; `GPIOJSONSVC_MOCK_LOG` also enables the XML write log. It then validates every mapped XML path and line and binds the Unix socket. Without `--mock`, it returns `real backend unavailable; use --mock` and does not bind.
-- Stale socket files are removed before bind. On Ctrl-C the listener stops, live sessions are closed, and `BoundSocket` removes the socket path.
+- Stale socket files are removed before bind. A signal task translates SIGINT/SIGTERM into `SystemEvent::SHUTDOWN`; the listener and live sessions all stop on that event, and `BoundSocket` removes the socket path.
 
 `AppConfig` / `ServiceConfig` do not encode the backend. Adding a real backend later should only change `select_backend` and the `open_chip` implementation.
 

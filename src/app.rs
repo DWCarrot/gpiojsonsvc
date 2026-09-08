@@ -15,7 +15,6 @@ use crate::transport::uds::UdsConnection;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
-use std::future::Future;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -187,7 +186,14 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
                 },
                 Arc::new(config.service),
             );
-            runtime.run_until(shutdown_signal()?).await
+            tracing::info!(pid = %std::process::id(), "running service");
+            let events = SystemEvent::new();
+            let signals = spawn_signal_task(events.clone())?;
+            let result = runtime.serve(events).await;
+            signals.abort();
+            let _ = signals.await;
+            tracing::info!(pid = %std::process::id(), "service shutdown");
+            result
         }
     }
 }
@@ -251,20 +257,21 @@ impl<B: Backend + 'static> ServiceRuntime<B> {
         }
     }
 
-    pub async fn run_until(self, shutdown: impl Future<Output = ()>) -> Result<(), AppError> {
+    async fn serve(self, events: SystemEvent) -> Result<(), AppError> {
         let (listener, bound) = BoundSocket::bind(&self.transport.socket_path)?;
         tracing::info!(socket = %self.transport.socket_path, "uds listener started");
 
-        let events = SystemEvent::new();
         let mut sessions = Vec::new();
-        tokio::pin!(shutdown);
+        let mut seen_seq = 0;
         let mut result = Ok(());
         loop {
             tokio::select! {
                 biased;
-                _ = &mut shutdown => {
-                    tracing::info!("shutdown requested");
-                    break;
+                code = events.recv(&mut seen_seq) => {
+                    if code == SystemEvent::SHUTDOWN {
+                        tracing::info!("shutdown requested");
+                        break;
+                    }
                 }
                 accepted = listener.accept() => {
                     match accepted {
@@ -398,20 +405,21 @@ fn cleanup_socket_if_exists(path: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn shutdown_signal() -> Result<impl Future<Output = ()>, AppError> {
+fn spawn_signal_task(events: SystemEvent) -> Result<JoinHandle<()>, AppError> {
     use tokio::signal::unix::signal;
     use tokio::signal::unix::SignalKind;
 
-    let mut sigint = signal(SignalKind::interrupt()).map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGINT: {err}")))?;
-    let mut sigterm = signal(SignalKind::terminate()).map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGTERM: {err}")))?;
-    Ok(
-        async move {
-            tokio::select! {
-                _ = sigint.recv() => tracing::debug!(signal = "SIGINT", "received shutdown signal"),
-                _ = sigterm.recv() => tracing::debug!(signal = "SIGTERM", "received shutdown signal"),
-            }
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGINT: {err}")))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGTERM: {err}")))?;
+    Ok(tokio::spawn(async move {
+        tokio::select! {
+            _ = sigint.recv() => tracing::debug!(signal = "SIGINT", "received shutdown signal"),
+            _ = sigterm.recv() => tracing::debug!(signal = "SIGTERM", "received shutdown signal"),
         }
-    )
+        events.emit(SystemEvent::SHUTDOWN);
+    }))
 }
 
 #[cfg(test)]
@@ -425,7 +433,6 @@ mod tests {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
-    use tokio::sync::oneshot;
 
     use super::AppConfig;
     use super::Cli;
@@ -439,6 +446,7 @@ mod tests {
     use crate::config::ServiceConfig;
     use crate::error::AppError;
     use crate::gpio::mock::MockBackend;
+    use crate::system_event::SystemEvent;
     use crate::transport::ServerConfig;
 
     const SAMPLE_XML: &str = r#"<gpiochip id="gpiochip0" label="mock gpiochip0">
@@ -688,7 +696,7 @@ socket = "{socket}"
     }
 
     #[tokio::test]
-    async fn run_until_binds_then_removes_socket_on_shutdown() {
+    async fn serve_binds_then_removes_socket_on_shutdown() {
         let dir = TempDir::new().expect("tempdir");
         let socket = dir.path().join("gpiojsonsvc.sock");
         let xml = dir.path().join("gpiochip0.xml");
@@ -711,14 +719,9 @@ socket = "{socket}"
             std::sync::Arc::new(service.clone()),
         );
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let join = tokio::spawn(async move {
-            runtime
-                .run_until(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
+        let events = SystemEvent::new();
+        let serve_events = events.clone();
+        let join = tokio::spawn(async move { runtime.serve(serve_events).await });
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -731,13 +734,13 @@ socket = "{socket}"
         .await
         .expect("listener did not bind");
 
-        shutdown_tx.send(()).expect("send shutdown");
+        events.emit(SystemEvent::SHUTDOWN);
         join.await.expect("runtime task").expect("runtime shutdown");
         assert!(!stale.exists());
     }
 
     #[tokio::test]
-    async fn run_until_closes_connected_clients_on_shutdown() {
+    async fn serve_closes_connected_clients_on_shutdown() {
         let dir = TempDir::new().expect("tempdir");
         let socket = dir.path().join("gpiojsonsvc.sock");
         let xml = dir.path().join("gpiochip0.xml");
@@ -759,14 +762,9 @@ socket = "{socket}"
             std::sync::Arc::new(service),
         );
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let join = tokio::spawn(async move {
-            runtime
-                .run_until(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
+        let events = SystemEvent::new();
+        let serve_events = events.clone();
+        let join = tokio::spawn(async move { runtime.serve(serve_events).await });
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -800,7 +798,7 @@ socket = "{socket}"
         }
         assert!(line.contains("\"status\":\"ok\""), "{line}");
 
-        shutdown_tx.send(()).expect("send shutdown");
+        events.emit(SystemEvent::SHUTDOWN);
         tokio::time::timeout(Duration::from_secs(2), join)
             .await
             .expect("runtime did not stop while a client was connected")

@@ -225,6 +225,11 @@ where
     }
 
     pub async fn run(mut self, events: SystemEvent) {
+        tracing::info!(
+            session_id = self.session_id,
+            connection = %self.connection_info,
+            "session started"
+        );
         let mut seen_seq = 0;
         loop {
             let next_deadline = self
@@ -264,6 +269,11 @@ where
         }
         let _ = self.writer.close().await;
         self.state = SessionState::Closed;
+        tracing::info!(
+            session_id = self.session_id,
+            connection = %self.connection_info,
+            "session ended"
+        );
     }
 
     async fn handle_command(&mut self, command: ReactorCommand) -> Result<bool, W::Error> {
