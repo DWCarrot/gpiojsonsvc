@@ -17,7 +17,7 @@ use thiserror::Error;
 use crate::gpio::LineBias;
 use crate::gpio::LineDirection;
 use crate::gpio::LineDrive;
-use crate::gpio::LineValue;
+use crate::gpio::ValidLineValue;
 
 /// One-chip XML document: a single `<gpiochip id="...">` root with `<line>` children.
 /// A `<gpiochips>` wrapper is not part of this format.
@@ -46,17 +46,17 @@ impl LineLevel {
     }
 }
 
-pub fn line_level_to_line_value(level: LineLevel, active_low: bool) -> LineValue {
+pub fn line_level_to_line_value(level: LineLevel, active_low: bool) -> ValidLineValue {
     match (level, active_low) {
-        (LineLevel::High, false) | (LineLevel::Low, true) => LineValue::Active,
-        (LineLevel::Low, false) | (LineLevel::High, true) => LineValue::Inactive,
+        (LineLevel::High, false) | (LineLevel::Low, true) => ValidLineValue::Active,
+        (LineLevel::Low, false) | (LineLevel::High, true) => ValidLineValue::Inactive,
     }
 }
 
-pub fn line_value_to_line_level(value: LineValue, active_low: bool) -> LineLevel {
+pub fn line_value_to_line_level(value: ValidLineValue, active_low: bool) -> LineLevel {
     match (value, active_low) {
-        (LineValue::Active, false) | (LineValue::Inactive, true) => LineLevel::High,
-        (LineValue::Inactive, false) | (LineValue::Active, true) => LineLevel::Low,
+        (ValidLineValue::Active, false) | (ValidLineValue::Inactive, true) => LineLevel::High,
+        (ValidLineValue::Inactive, false) | (ValidLineValue::Active, true) => LineLevel::Low,
     }
 }
 
@@ -354,8 +354,8 @@ pub fn diff_snapshot<R: BufRead>(
     reader: &mut Reader<R>,
     xml_version: XmlVersion,
     baseline: &MockChipSnapshot,
-) -> Result<BTreeMap<u32, LineValue>, LoadError> {
-    let mut result: BTreeMap<u32, LineValue> = BTreeMap::new();
+) -> Result<BTreeMap<u32, ValidLineValue>, LoadError> {
+    let mut result: BTreeMap<u32, ValidLineValue> = BTreeMap::new();
     let mut seen_chip = false;
     let mut current_offset = None;
     let mut current_line_level = None;
@@ -655,7 +655,7 @@ mod tests {
     use crate::gpio::LineBias;
     use crate::gpio::LineDirection;
     use crate::gpio::LineDrive;
-    use crate::gpio::LineValue;
+    use crate::gpio::ValidLineValue;
 
     use super::LineLevel;
     use super::LoadError;
@@ -678,7 +678,7 @@ mod tests {
     fn try_diff_xml(
         baseline: &MockChipSnapshot,
         content: &str,
-    ) -> Result<BTreeMap<u32, LineValue>, LoadError> {
+    ) -> Result<BTreeMap<u32, ValidLineValue>, LoadError> {
         let mut reader = Reader::from_str(content);
         diff_snapshot(&mut reader, XmlVersion::Explicit1_0, baseline)
     }
@@ -692,7 +692,7 @@ mod tests {
         String::from_utf8(buffer).expect("utf8 snapshot xml")
     }
 
-    fn diff_xml(baseline: &MockChipSnapshot, content: &str) -> BTreeMap<u32, LineValue> {
+    fn diff_xml(baseline: &MockChipSnapshot, content: &str) -> BTreeMap<u32, ValidLineValue> {
         try_diff_xml(baseline, content).expect("diff snapshot")
     }
 
@@ -924,7 +924,7 @@ mod tests {
 </gpiochip>"#,
         );
         assert_eq!(input_change.len(), 1);
-        assert_eq!(input_change.get(&0), Some(&LineValue::Active));
+        assert_eq!(input_change.get(&0), Some(&ValidLineValue::Active));
 
         let output_only_change = diff_xml(
             &baseline,
@@ -983,26 +983,29 @@ mod tests {
     <line id="0" direction="input" bias="disabled" active_low="false">H</line>
 </gpiochip>"#,
         );
-        assert_eq!(changed_logical_level.get(&0), Some(&LineValue::Inactive));
+        assert_eq!(
+            changed_logical_level.get(&0),
+            Some(&ValidLineValue::Inactive)
+        );
     }
 
     #[test]
     fn line_level_conversion_respects_active_low() {
         assert_eq!(
             line_level_to_line_value(LineLevel::High, false),
-            LineValue::Active
+            ValidLineValue::Active
         );
         assert_eq!(
             line_level_to_line_value(LineLevel::High, true),
-            LineValue::Inactive
+            ValidLineValue::Inactive
         );
         assert_eq!(
             line_level_to_line_value(LineLevel::Low, true),
-            LineValue::Active
+            ValidLineValue::Active
         );
         assert_eq!(
             line_level_to_line_value(LineLevel::Low, false),
-            LineValue::Inactive
+            ValidLineValue::Inactive
         );
     }
 

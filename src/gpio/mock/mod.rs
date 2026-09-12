@@ -131,6 +131,7 @@ mod tests {
     use crate::gpio::LineSettings;
     use crate::gpio::LineValue;
     use crate::gpio::RequestConfig;
+    use crate::gpio::ValidLineValue;
     use crate::gpio::mock::LineLevel;
     use std::fs;
     use std::os::fd::AsRawFd;
@@ -316,11 +317,14 @@ mod tests {
         assert_eq!(request.get_requested_offsets(&mut offsets), 1);
         assert_eq!(offsets, [1]);
 
-        assert_eq!(request.get_value(1).expect("read"), LineValue::Active);
+        assert_eq!(request.get_value(1).expect("read"), ValidLineValue::Active);
         request
-            .set_value(1, LineValue::Active)
+            .set_value(1, ValidLineValue::Active)
             .expect("write output");
-        assert_eq!(request.get_value(1).expect("read again"), LineValue::Active);
+        assert_eq!(
+            request.get_value(1).expect("read again"),
+            ValidLineValue::Active
+        );
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -343,14 +347,14 @@ mod tests {
             .set_direction(LineDirection::Output)
             .expect("direction");
         output_settings
-            .set_output_value(LineValue::Active)
+            .set_output_value(ValidLineValue::Active)
             .expect("output value");
         line_cfg
             .add_line_settings(&[1], &output_settings)
             .expect("configure output");
 
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
-        assert_eq!(request.get_value(1).expect("read"), LineValue::Active);
+        assert_eq!(request.get_value(1).expect("read"), ValidLineValue::Active);
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -373,17 +377,20 @@ mod tests {
             .set_direction(LineDirection::Output)
             .expect("direction");
         output_settings
-            .set_output_value(LineValue::Active)
+            .set_output_value(ValidLineValue::Active)
             .expect("output value");
         line_cfg
             .add_line_settings(&[1], &output_settings)
             .expect("configure output");
         line_cfg
-            .set_output_values(&[LineValue::Inactive])
+            .set_output_values(&[ValidLineValue::Inactive])
             .expect("override output values");
 
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
-        assert_eq!(request.get_value(1).expect("read"), LineValue::Inactive);
+        assert_eq!(
+            request.get_value(1).expect("read"),
+            ValidLineValue::Inactive
+        );
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -410,7 +417,7 @@ mod tests {
             .expect("configure output");
 
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
-        assert_eq!(request.get_value(1).expect("read"), LineValue::Active);
+        assert_eq!(request.get_value(1).expect("read"), ValidLineValue::Active);
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -441,7 +448,7 @@ mod tests {
             .set_direction(LineDirection::Output)
             .expect("direction");
         second_output
-            .set_output_value(LineValue::Inactive)
+            .set_output_value(ValidLineValue::Inactive)
             .expect("output value");
         line_cfg
             .add_line_settings(&[0, 1], &first_output)
@@ -450,12 +457,18 @@ mod tests {
             .add_line_settings(&[1], &second_output)
             .expect("configure second output");
         line_cfg
-            .set_output_values(&[LineValue::Active])
+            .set_output_values(&[ValidLineValue::Active])
             .expect("override first output only");
 
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
-        assert_eq!(request.get_value(0).expect("line 0"), LineValue::Active);
-        assert_eq!(request.get_value(1).expect("line 1"), LineValue::Inactive);
+        assert_eq!(
+            request.get_value(0).expect("line 0"),
+            ValidLineValue::Active
+        );
+        assert_eq!(
+            request.get_value(1).expect("line 1"),
+            ValidLineValue::Inactive
+        );
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -483,14 +496,14 @@ mod tests {
             .expect("direction");
         output_settings.set_active_low(true);
         output_settings
-            .set_output_value(LineValue::Active)
+            .set_output_value(ValidLineValue::Active)
             .expect("output value");
         line_cfg
             .add_line_settings(&[1], &output_settings)
             .expect("configure output");
 
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
-        assert_eq!(request.get_value(1).expect("read"), LineValue::Active);
+        assert_eq!(request.get_value(1).expect("read"), ValidLineValue::Active);
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -523,14 +536,15 @@ mod tests {
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
 
         request
-            .set_values_subset(&[1, 0], &[LineValue::Inactive, LineValue::Active])
+            .set_values_subset(&[1, 0], &[ValidLineValue::Inactive, ValidLineValue::Active])
             .expect("write subset");
 
-        let mut values = [LineValue::Inactive; 2];
+        let mut values = [LineValue::INACTIVE; 2];
         request
             .get_values_subset(&[1, 0], &mut values)
             .expect("read subset");
-        assert_eq!(values, [LineValue::Inactive, LineValue::Active]);
+        assert_eq!(values[0], ValidLineValue::Inactive);
+        assert_eq!(values[1], ValidLineValue::Active);
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -736,7 +750,7 @@ mod tests {
             .expect("configure input");
 
         let request = chip.request_lines(None, &line_cfg).expect("request lines");
-        assert_eq!(request.get_value(0).expect("read"), LineValue::Active);
+        assert_eq!(request.get_value(0).expect("read"), ValidLineValue::Active);
 
         let persisted = fs::read_to_string(path).expect("read xml");
         let snapshot = parse_chip_xml(&persisted).expect("parse persisted");
@@ -968,7 +982,7 @@ mod tests {
         let request = request_outputs(&backend, &chip, &[1]);
 
         request
-            .set_value(1, LineValue::Inactive)
+            .set_value(1, ValidLineValue::Inactive)
             .expect("write output");
 
         assert!(
@@ -994,9 +1008,11 @@ mod tests {
         let chip = backend.open_chip(path).expect("open chip");
         let request = request_outputs(&backend, &chip, &[0, 1]);
 
-        request.set_value(0, LineValue::Active).expect("set_value");
         request
-            .set_values_subset(&[1], &[LineValue::Inactive])
+            .set_value(0, ValidLineValue::Active)
+            .expect("set_value");
+        request
+            .set_values_subset(&[1], &[ValidLineValue::Inactive])
             .expect("set_values_subset");
 
         backend.write_log().expect("write log").flush();
@@ -1061,7 +1077,7 @@ mod tests {
             );
 
             request
-                .set_value(1, LineValue::Inactive)
+                .set_value(1, ValidLineValue::Inactive)
                 .expect("set_value");
             write_log.flush();
             let after_set = fs::read_to_string(&log_path).expect("read write log");

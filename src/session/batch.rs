@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::gpio::LineValue;
+use crate::gpio::ValidLineValue;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CombinedOffsetsError {
@@ -89,12 +89,12 @@ impl<T> CombinedOffsets<T> {
     }
 }
 
-impl CombinedOffsets<LineValue> {
+impl CombinedOffsets<ValidLineValue> {
     pub fn add_set(
         &mut self,
         chip_index: u32,
         offset: u32,
-        value: LineValue,
+        value: ValidLineValue,
     ) -> Result<(), CombinedOffsetsError> {
         let slot = chip_slot(chip_index, self.chips.len())?;
         let chip = &mut self.chips[slot];
@@ -122,7 +122,7 @@ fn chip_slot(chip_index: u32, chip_count: usize) -> Result<usize, CombinedOffset
 
 #[cfg(test)]
 mod tests {
-    use crate::gpio::LineValue;
+    use crate::gpio::ValidLineValue;
 
     use super::CollectRule;
     use super::CombinedOffsets;
@@ -180,10 +180,12 @@ mod tests {
 
     #[test]
     fn set_batch_rejects_conflicting_duplicate_offsets() {
-        let mut batch = CombinedOffsets::<LineValue>::new(1);
-        batch.add_set(0, 2, LineValue::Active).expect("first write");
+        let mut batch = CombinedOffsets::<ValidLineValue>::new(1);
+        batch
+            .add_set(0, 2, ValidLineValue::Active)
+            .expect("first write");
         assert_eq!(
-            batch.add_set(0, 2, LineValue::Inactive),
+            batch.add_set(0, 2, ValidLineValue::Inactive),
             Err(CombinedOffsetsError::DuplicateSetOffset {
                 chip_index: 0,
                 offset: 2,
@@ -193,10 +195,12 @@ mod tests {
 
     #[test]
     fn set_batch_allows_identical_duplicate_offsets() {
-        let mut batch = CombinedOffsets::<LineValue>::new(1);
-        batch.add_set(0, 2, LineValue::Active).expect("first write");
+        let mut batch = CombinedOffsets::<ValidLineValue>::new(1);
         batch
-            .add_set(0, 2, LineValue::Active)
+            .add_set(0, 2, ValidLineValue::Active)
+            .expect("first write");
+        batch
+            .add_set(0, 2, ValidLineValue::Active)
             .expect("duplicate write");
         assert_eq!(batch.offsets(0).expect("offsets"), &[2]);
     }

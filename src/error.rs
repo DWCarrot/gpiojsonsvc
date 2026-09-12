@@ -10,8 +10,11 @@ pub enum AppError {
     Usage(String),
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("real backend unavailable; use --mock")]
-    RealBackendUnavailable,
+    #[cfg(not(target_os = "linux"))]
+    #[error("real GPIO backend is only supported on Linux")]
+    RealBackendUnsupported,
+    #[error("GPIO chip device `{device}` is not a gpiochip character device")]
+    InvalidGpiochipDevice { device: String },
     #[error("GPIOJSONSVC_MOCK_LOG is set but --mock was not given")]
     MockLogWithoutMock,
     #[error("mock write log `{path}` is unavailable: {source}")]

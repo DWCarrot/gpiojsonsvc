@@ -20,6 +20,7 @@ use crate::gpio::LineConfig;
 use crate::gpio::LineDirection;
 use crate::gpio::LineEdge;
 use crate::gpio::LineValue;
+use crate::gpio::ValidLineValue;
 
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
@@ -139,10 +140,10 @@ pub fn effective_direction(
 }
 
 pub fn to_logical_value(physical: LineLevel, active_low: bool) -> LineValue {
-    line_level_to_line_value(physical, active_low)
+    line_level_to_line_value(physical, active_low).into()
 }
 
-pub fn to_physical_value(logical: LineValue, active_low: bool) -> LineLevel {
+pub fn to_physical_value(logical: ValidLineValue, active_low: bool) -> LineLevel {
     line_value_to_line_level(logical, active_low)
 }
 
@@ -257,7 +258,7 @@ pub fn apply_external_file_diff(state: &mut MockChipState, content: &str) {
 fn dispatch_input_level_changes(
     state: &mut MockChipState,
     baseline: &MockChipSnapshot,
-    changes: &BTreeMap<u32, LineValue>,
+    changes: &BTreeMap<u32, ValidLineValue>,
 ) {
     for (offset, new_level) in changes {
         let Some(baseline_line) = baseline.lines.get(offset) else {
@@ -303,10 +304,13 @@ fn dispatch_input_level_changes(
     }
 }
 
-fn level_transition_event(previous: LineValue, current: LineValue) -> Option<EdgeEventType> {
+fn level_transition_event(
+    previous: ValidLineValue,
+    current: ValidLineValue,
+) -> Option<EdgeEventType> {
     match (previous, current) {
-        (LineValue::Inactive, LineValue::Active) => Some(EdgeEventType::RisingEdge),
-        (LineValue::Active, LineValue::Inactive) => Some(EdgeEventType::FallingEdge),
+        (ValidLineValue::Inactive, ValidLineValue::Active) => Some(EdgeEventType::RisingEdge),
+        (ValidLineValue::Active, ValidLineValue::Inactive) => Some(EdgeEventType::FallingEdge),
         _ => None,
     }
 }
@@ -409,7 +413,6 @@ mod tests {
     use crate::gpio::LineDirection;
     use crate::gpio::LineDrive;
     use crate::gpio::LineEdge;
-    use crate::gpio::LineValue;
     use crate::gpio::mock::config::MockRequestLineState;
     use crate::gpio::mock::snapshot::MockLineSnapshot;
     use std::collections::BTreeMap;

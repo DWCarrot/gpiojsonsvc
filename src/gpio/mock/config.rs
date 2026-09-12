@@ -8,6 +8,7 @@ use crate::gpio::LineEdge;
 use crate::gpio::LineSettings;
 use crate::gpio::LineValue;
 use crate::gpio::RequestConfig;
+use crate::gpio::ValidLineValue;
 
 const DEFAULT_EDGE_EVENT_BUFFER_CAPACITY: usize = 64;
 
@@ -22,7 +23,7 @@ pub struct MockLineSettings {
     debounce_period_us: u64,
     event_clock: LineClock,
     /// When `None`, request creation keeps the persisted output level.
-    output_value: Option<LineValue>,
+    output_value: Option<ValidLineValue>,
 }
 
 impl Default for MockLineSettings {
@@ -45,7 +46,7 @@ impl MockLineSettings {
         Self::default()
     }
 
-    pub(crate) fn configured_output_value(&self) -> Option<LineValue> {
+    pub(crate) fn configured_output_value(&self) -> Option<ValidLineValue> {
         self.output_value
     }
 }
@@ -117,10 +118,10 @@ impl LineSettings for MockLineSettings {
     }
 
     fn get_output_value(&self) -> LineValue {
-        self.output_value.unwrap_or(LineValue::Inactive)
+        self.output_value.unwrap_or(ValidLineValue::Inactive).into()
     }
 
-    fn set_output_value(&mut self, value: LineValue) -> Result<(), GPIOError> {
+    fn set_output_value(&mut self, value: ValidLineValue) -> Result<(), GPIOError> {
         self.output_value = Some(value);
         Ok(())
     }
@@ -130,7 +131,7 @@ impl LineSettings for MockLineSettings {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MockLineConfig {
     entries: Vec<(u32, MockLineSettings)>,
-    output_values: Option<Vec<LineValue>>,
+    output_values: Option<Vec<ValidLineValue>>,
 }
 
 impl MockLineConfig {
@@ -174,7 +175,7 @@ impl LineConfig for MockLineConfig {
             .ok_or(GPIOError::UnconfiguredOffset { offset })
     }
 
-    fn set_output_values(&mut self, values: &[LineValue]) -> Result<(), GPIOError> {
+    fn set_output_values(&mut self, values: &[ValidLineValue]) -> Result<(), GPIOError> {
         self.output_values = Some(values.to_vec());
         Ok(())
     }
@@ -193,7 +194,7 @@ impl LineConfig for MockLineConfig {
 }
 
 impl MockLineConfig {
-    pub(crate) fn configured_output_values(&self) -> Option<Vec<LineValue>> {
+    pub(crate) fn configured_output_values(&self) -> Option<Vec<ValidLineValue>> {
         self.output_values.clone()
     }
 }
@@ -240,7 +241,7 @@ pub struct MockRequestLineState {
     pub debounce_period_us: u64,
     pub event_clock: LineClock,
     /// When `None`, request creation keeps the persisted output level.
-    pub output_value: Option<LineValue>,
+    pub output_value: Option<ValidLineValue>,
 }
 
 impl MockRequestLineState {
@@ -291,7 +292,7 @@ mod tests {
     fn default_output_value_is_unset() {
         let settings = MockLineSettings::new();
         assert_eq!(settings.configured_output_value(), None);
-        assert_eq!(settings.get_output_value(), LineValue::Inactive);
+        assert_eq!(settings.get_output_value(), ValidLineValue::Inactive);
     }
 
     #[test]
@@ -301,28 +302,28 @@ mod tests {
         config.add_line_settings(&[0, 1, 2], &settings).unwrap();
 
         config
-            .set_output_values(&[LineValue::Active])
+            .set_output_values(&[ValidLineValue::Active])
             .expect("partial override");
         assert_eq!(
             config.configured_output_values(),
-            Some(vec![LineValue::Active])
+            Some(vec![ValidLineValue::Active])
         );
 
         config
             .set_output_values(&[
-                LineValue::Inactive,
-                LineValue::Active,
-                LineValue::Inactive,
-                LineValue::Active,
+                ValidLineValue::Inactive,
+                ValidLineValue::Active,
+                ValidLineValue::Inactive,
+                ValidLineValue::Active,
             ])
             .expect("extra override values are stored");
         assert_eq!(
             config.configured_output_values(),
             Some(vec![
-                LineValue::Inactive,
-                LineValue::Active,
-                LineValue::Inactive,
-                LineValue::Active,
+                ValidLineValue::Inactive,
+                ValidLineValue::Active,
+                ValidLineValue::Inactive,
+                ValidLineValue::Active,
             ])
         );
     }

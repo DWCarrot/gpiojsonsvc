@@ -29,7 +29,10 @@
 pub mod mock;
 pub mod sys;
 
+use std::mem::align_of;
+use std::mem::size_of;
 use std::os::fd::AsRawFd;
+use std::os::raw::c_int;
 
 use thiserror::Error;
 
@@ -37,14 +40,62 @@ use thiserror::Error;
 // Shared enums (`@defgroup line_defs` and event types)
 // ---------------------------------------------------------------------------
 
-/// Logical line state (`enum gpiod_line_value`).
+/// Logical line state matching `enum gpiod_line_value` (`c_int`).
+///
+/// This is the FFI-facing buffer type. C get APIs write raw integers, including
+/// `GPIOD_LINE_VALUE_ERROR` (`-1`). Use [`ValidLineValue`] for set APIs and
+/// comparisons; convert with [`TryFrom`] / [`From`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineValue {
-    /// `GPIOD_LINE_VALUE_INACTIVE` — line is logically inactive.
+#[repr(transparent)]
+pub struct LineValue(c_int);
+
+impl LineValue {
+    /// `GPIOD_LINE_VALUE_ERROR` — C get-API failure sentinel.
+    pub const ERROR: Self = Self(-1);
+    /// `GPIOD_LINE_VALUE_INACTIVE`.
+    pub const INACTIVE: Self = Self(0);
+    /// `GPIOD_LINE_VALUE_ACTIVE`.
+    pub const ACTIVE: Self = Self(1);
+
+    /// Wrap a raw `gpiod_line_value`.
+    pub const fn from_raw(value: c_int) -> Self {
+        Self(value)
+    }
+
+    /// Return the raw `gpiod_line_value`.
+    pub const fn as_raw(self) -> c_int {
+        self.0
+    }
+
+    /// `true` when this is the C error sentinel.
+    pub const fn is_error(self) -> bool {
+        self.0 == Self::ERROR.0
+    }
+}
+
+/// Inactive/active line levels for set APIs, config, and comparisons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ValidLineValue {
+    /// `GPIOD_LINE_VALUE_INACTIVE`.
     Inactive = 0,
-    /// `GPIOD_LINE_VALUE_ACTIVE` — line is logically active.
+    /// `GPIOD_LINE_VALUE_ACTIVE`.
     Active = 1,
 }
+
+const _: () = {
+    assert!(size_of::<LineValue>() == size_of::<c_int>());
+    assert!(align_of::<LineValue>() == align_of::<c_int>());
+    assert!(size_of::<ValidLineValue>() == size_of::<LineValue>());
+    assert!(align_of::<ValidLineValue>() == align_of::<LineValue>());
+    assert!(size_of::<ValidLineValue>() == size_of::<c_int>());
+    assert!(align_of::<ValidLineValue>() == align_of::<c_int>());
+    assert!(ValidLineValue::Inactive as i32 == LineValue::INACTIVE.as_raw() as i32);
+    assert!(ValidLineValue::Active as i32 == LineValue::ACTIVE.as_raw() as i32);
+    assert!(LineValue::ERROR.as_raw() == -1);
+    assert!(LineValue::INACTIVE.as_raw() == 0);
+    assert!(LineValue::ACTIVE.as_raw() == 1);
+};
 
 /// Direction settings (`enum gpiod_line_direction`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -165,10 +216,42 @@ pub enum GPIOError {
     EmptyLineConfig,
     #[error("line offset {offset} is not configured")]
     UnconfiguredOffset { offset: u32 },
+    #[error("invalid line value {0}")]
+    InvalidLineValue(c_int),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+}
+
+impl From<ValidLineValue> for LineValue {
+    fn from(value: ValidLineValue) -> Self {
+        Self(value as c_int)
+    }
+}
+
+impl TryFrom<LineValue> for ValidLineValue {
+    type Error = GPIOError;
+
+    fn try_from(value: LineValue) -> Result<Self, Self::Error> {
+        match value.as_raw() {
+            0 => Ok(Self::Inactive),
+            1 => Ok(Self::Active),
+            other => Err(GPIOError::InvalidLineValue(other)),
+        }
+    }
+}
+
+impl PartialEq<ValidLineValue> for LineValue {
+    fn eq(&self, other: &ValidLineValue) -> bool {
+        self.0 == *other as c_int
+    }
+}
+
+impl PartialEq<LineValue> for ValidLineValue {
+    fn eq(&self, other: &LineValue) -> bool {
+        other == self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +403,7 @@ pub trait LineSettings {
     fn get_output_value(&self) -> LineValue;
 
     /// `gpiod_line_settings_set_output_value`.
-    fn set_output_value(&mut self, value: LineValue) -> Result<(), GPIOError>;
+    fn set_output_value(&mut self, value: ValidLineValue) -> Result<(), GPIOError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +434,7 @@ pub trait LineConfig {
 
     /// `gpiod_line_config_set_output_values` — overrides per-line output values;
     /// `values` align with configured offset order from `get_configured_offsets`.
-    fn set_output_values(&mut self, values: &[LineValue]) -> Result<(), GPIOError>;
+    fn set_output_values(&mut self, values: &[ValidLineValue]) -> Result<(), GPIOError>;
 
     /// `gpiod_line_config_get_num_configured_offsets`.
     fn get_num_configured_offsets(&self) -> usize;
@@ -572,20 +655,28 @@ pub trait LineRequest: AsRawFd + Send {
     fn get_value(&self, offset: u32) -> Result<LineValue, GPIOError>;
 
     /// `gpiod_line_request_get_values_subset`.
+    ///
+    /// On success, `values` holds raw [`LineValue`]s as written by libgpiod.
     fn get_values_subset(&self, offsets: &[u32], values: &mut [LineValue])
     -> Result<(), GPIOError>;
 
     /// `gpiod_line_request_get_values` — order matches `get_requested_offsets`.
+    ///
+    /// On success, `values` holds raw [`LineValue`]s as written by libgpiod.
     fn get_values(&self, values: &mut [LineValue]) -> Result<(), GPIOError>;
 
     /// `gpiod_line_request_set_value`.
-    fn set_value(&self, offset: u32, value: LineValue) -> Result<(), GPIOError>;
+    fn set_value(&self, offset: u32, value: ValidLineValue) -> Result<(), GPIOError>;
 
     /// `gpiod_line_request_set_values_subset`.
-    fn set_values_subset(&self, offsets: &[u32], values: &[LineValue]) -> Result<(), GPIOError>;
+    fn set_values_subset(
+        &self,
+        offsets: &[u32],
+        values: &[ValidLineValue],
+    ) -> Result<(), GPIOError>;
 
     /// `gpiod_line_request_set_values` — order matches `get_requested_offsets`.
-    fn set_values(&self, values: &[LineValue]) -> Result<(), GPIOError>;
+    fn set_values(&self, values: &[ValidLineValue]) -> Result<(), GPIOError>;
 
     /// `gpiod_line_request_reconfigure_lines` — replaces entire config; unrequested
     /// offsets in `config` are ignored.
@@ -604,4 +695,40 @@ pub trait LineRequest: AsRawFd + Send {
         buffer: &mut Self::EdgeEventBuffer,
         max_events: usize,
     ) -> Result<usize, GPIOError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GPIOError;
+    use super::LineValue;
+    use super::ValidLineValue;
+
+    #[test]
+    fn valid_line_value_converts_to_and_from_line_value() {
+        for value in [ValidLineValue::Inactive, ValidLineValue::Active] {
+            let raw: LineValue = value.into();
+            assert_eq!(raw, value);
+            assert_eq!(value, raw);
+            assert_eq!(ValidLineValue::try_from(raw).expect("valid"), value);
+        }
+        assert_eq!(
+            LineValue::from(ValidLineValue::Inactive),
+            LineValue::INACTIVE
+        );
+        assert_eq!(LineValue::from(ValidLineValue::Active), LineValue::ACTIVE);
+    }
+
+    #[test]
+    fn invalid_line_value_try_from_fails() {
+        assert!(matches!(
+            ValidLineValue::try_from(LineValue::ERROR),
+            Err(GPIOError::InvalidLineValue(-1))
+        ));
+        assert!(matches!(
+            ValidLineValue::try_from(LineValue::from_raw(2)),
+            Err(GPIOError::InvalidLineValue(2))
+        ));
+        assert!(LineValue::ERROR.is_error());
+        assert!(!LineValue::INACTIVE.is_error());
+    }
 }

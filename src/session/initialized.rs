@@ -350,7 +350,7 @@ mod tests {
     use crate::gpio::ChipInfo;
     use crate::gpio::EdgeEventBuffer;
     use crate::gpio::LineRequest;
-    use crate::gpio::LineValue;
+    use crate::gpio::ValidLineValue;
     use crate::gpio::mock::MockBackend;
     use crate::protocol::request::EdgeMode;
     use crate::protocol::request::PinSelector;
@@ -455,11 +455,11 @@ mod tests {
         assert_eq!(request.get_num_requested_lines(), 4);
         assert_eq!(
             request.get_value(0).expect("read input"),
-            LineValue::Inactive
+            ValidLineValue::Inactive
         );
         assert_eq!(
             request.get_value(3).expect("read output"),
-            LineValue::Active
+            ValidLineValue::Active
         );
         assert_eq!(
             session.compiled_targets.trigger_target_name(0, 4),

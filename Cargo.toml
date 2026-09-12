@@ -18,6 +18,12 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 quick-xml = { version = "0.40.1", features = ["serialize"] }
 inotify = "0.11.1"
 nix = { version = "0.30", features = ["event", "fs", "poll", "signal"] }
+# Official libgpiod 2.x FFI (pkg-config `libgpiod` >= 2). Always a crate dep so
+# rust-analyzer includes `src/gpio/sys/*` in the module tree.
+libgpiod-sys = "1"
+
+[build-dependencies]
+pkg-config = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

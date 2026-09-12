@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::gpio::LineValue;
+use crate::gpio::ValidLineValue;
 use crate::protocol::request::SetStepRequest;
 
 use super::batch::CombinedOffsets;
@@ -16,7 +16,7 @@ use super::state::SessionError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingCompiledStep {
     accumulated_lag: Duration,
-    batch: CombinedOffsets<LineValue>,
+    batch: CombinedOffsets<ValidLineValue>,
 }
 
 pub struct PendingCompiledSteps(Vec<PendingCompiledStep>);
@@ -93,12 +93,12 @@ impl PendingSetSequence {
     }
 
     /// Batch for step `0`, which the caller applies before installing the sequence.
-    pub fn first_batch(&self) -> &CombinedOffsets<LineValue> {
+    pub fn first_batch(&self) -> &CombinedOffsets<ValidLineValue> {
         &self.steps[0].batch
     }
 
     /// Batch for the next unapplied step, if any remain.
-    pub fn batch(&self) -> Option<&CombinedOffsets<LineValue>> {
+    pub fn batch(&self) -> Option<&CombinedOffsets<ValidLineValue>> {
         self.steps.get(self.next_step_index).map(|step| &step.batch)
     }
 
@@ -132,7 +132,7 @@ mod tests {
 
     use tokio::time::Instant;
 
-    use crate::gpio::LineValue;
+    use crate::gpio::ValidLineValue;
     use crate::protocol::request::SetStepRequest;
     use crate::session::CompiledTarget;
     use crate::session::CompiledTargets;
@@ -185,11 +185,11 @@ mod tests {
         );
         assert_eq!(
             compiled_steps[0].batch.attachments(0).unwrap(),
-            &[LineValue::Active]
+            &[ValidLineValue::Active]
         );
         assert_eq!(
             compiled_steps[1].batch.attachments(0).unwrap(),
-            &[LineValue::Inactive]
+            &[ValidLineValue::Inactive]
         );
     }
 
@@ -218,7 +218,7 @@ mod tests {
         assert!(pending.matches_token(7));
         assert_eq!(
             pending.first_batch().attachments(0).unwrap(),
-            &[LineValue::Active]
+            &[ValidLineValue::Active]
         );
         assert_eq!(
             pending.deadline(),
@@ -228,7 +228,7 @@ mod tests {
 
         assert_eq!(
             pending.batch().unwrap().attachments(0).unwrap(),
-            &[LineValue::Inactive]
+            &[ValidLineValue::Inactive]
         );
         assert!(pending.advance());
         assert_eq!(
@@ -237,7 +237,7 @@ mod tests {
         );
         assert_eq!(
             pending.batch().unwrap().attachments(0).unwrap(),
-            &[LineValue::Active]
+            &[ValidLineValue::Active]
         );
         assert!(!pending.advance());
         assert!(pending.is_complete());

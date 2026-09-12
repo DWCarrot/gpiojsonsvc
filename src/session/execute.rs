@@ -2,6 +2,7 @@ use crate::gpio::Backend;
 use crate::gpio::Chip;
 use crate::gpio::LineRequest;
 use crate::gpio::LineValue;
+use crate::gpio::ValidLineValue;
 use crate::protocol::request::TargetSelector;
 use crate::protocol::response::PinValuePayload;
 
@@ -52,7 +53,7 @@ pub fn compile_set_batch<'a, I>(
     compiled: &'a CompiledTargets,
     writes: I,
     chip_count: usize,
-) -> Result<CombinedOffsets<LineValue>, SessionError<'a>>
+) -> Result<CombinedOffsets<ValidLineValue>, SessionError<'a>>
 where
     I: IntoIterator<Item = (&'a str, u8)>,
 {
@@ -64,7 +65,7 @@ where
 }
 
 pub fn add_set_target<'a>(
-    batch: &mut CombinedOffsets<LineValue>,
+    batch: &mut CombinedOffsets<ValidLineValue>,
     compiled: &'a CompiledTargets,
     target_name: &'a str,
     value: u8,
@@ -92,7 +93,7 @@ pub fn add_set_target<'a>(
 
 pub fn fold_get_results(
     targets: &TargetSelector,
-    rules_and_values: &[(CollectRule, LineValue)],
+    rules_and_values: &[(CollectRule, ValidLineValue)],
 ) -> PinValuePayload {
     match targets {
         TargetSelector::Single(_) => {
@@ -120,14 +121,14 @@ pub fn fold_get_results(
 pub fn apply_get_batch<B: Backend>(
     session: &InitializedSession<B>,
     batch: &CombinedOffsets<CollectRule>,
-) -> Result<Vec<(CollectRule, LineValue)>, SessionError<'static>> {
+) -> Result<Vec<(CollectRule, ValidLineValue)>, SessionError<'static>> {
     let mut readings = Vec::new();
     for (chip_index, offsets, rules) in batch.iter() {
         let chip = &session.chips[chip_index as usize];
-        let mut values = vec![LineValue::Inactive; offsets.len()];
+        let mut values = vec![LineValue::INACTIVE; offsets.len()];
         chip.request.get_values_subset(offsets, &mut values)?;
         for (rule, value) in rules.iter().zip(values) {
-            readings.push((*rule, value));
+            readings.push((*rule, ValidLineValue::try_from(value)?));
         }
     }
     Ok(readings)
@@ -135,7 +136,7 @@ pub fn apply_get_batch<B: Backend>(
 
 pub fn apply_set_batch<B: Backend>(
     session: &InitializedSession<B>,
-    batch: &CombinedOffsets<LineValue>,
+    batch: &CombinedOffsets<ValidLineValue>,
 ) -> Result<(), SessionError<'static>> {
     for (chip_index, offsets, values) in batch.iter() {
         session.chips[chip_index as usize]
@@ -180,7 +181,7 @@ fn append_get_pins(
 }
 
 fn append_set_pins(
-    batch: &mut CombinedOffsets<LineValue>,
+    batch: &mut CombinedOffsets<ValidLineValue>,
     pins: &ResolvedPins,
     value: u8,
 ) -> Result<(), SessionError<'static>> {
@@ -204,18 +205,18 @@ fn append_set_pins(
     }
 }
 
-fn line_value_to_bit(value: LineValue) -> u8 {
+fn line_value_to_bit(value: ValidLineValue) -> u8 {
     match value {
-        LineValue::Active => 1,
-        LineValue::Inactive => 0,
+        ValidLineValue::Active => 1,
+        ValidLineValue::Inactive => 0,
     }
 }
 
-fn bit_to_line_value(bit: u8) -> LineValue {
+fn bit_to_line_value(bit: u8) -> ValidLineValue {
     if bit != 0 {
-        LineValue::Active
+        ValidLineValue::Active
     } else {
-        LineValue::Inactive
+        ValidLineValue::Inactive
     }
 }
 
@@ -238,6 +239,7 @@ mod tests {
     use crate::config::GPIODPinSpec;
     use crate::gpio::LineRequest;
     use crate::gpio::LineValue;
+    use crate::gpio::ValidLineValue;
     use crate::gpio::mock::MockBackend;
     use crate::protocol::request::EdgeMode;
     use crate::protocol::request::PinSelector;
@@ -350,7 +352,7 @@ mod tests {
     fn read_get_batch(
         session: &InitializedSession<MockBackend>,
         batch: &crate::session::CombinedOffsets<CollectRule>,
-    ) -> Vec<(CollectRule, LineValue)> {
+    ) -> Vec<(CollectRule, ValidLineValue)> {
         apply_get_batch(session, batch).expect("apply get batch")
     }
 
@@ -419,7 +421,7 @@ mod tests {
         assert_eq!(batch.offsets(0).expect("offsets"), &[2, 3]);
         assert_eq!(
             batch.attachments(0).expect("values"),
-            &[LineValue::Active, LineValue::Inactive]
+            &[ValidLineValue::Active, ValidLineValue::Inactive]
         );
     }
 
@@ -436,7 +438,7 @@ mod tests {
         assert_eq!(batch.offsets(0).expect("offsets"), &[2, 3]);
         assert_eq!(
             batch.attachments(0).expect("values"),
-            &[LineValue::Active, LineValue::Inactive]
+            &[ValidLineValue::Active, ValidLineValue::Inactive]
         );
     }
 
@@ -493,7 +495,7 @@ mod tests {
                     target_slot: 0,
                     bit_index: 0,
                 },
-                LineValue::Inactive,
+                ValidLineValue::Inactive,
             )],
         );
         assert_eq!(single, PinValuePayload::Value(0));
@@ -506,14 +508,14 @@ mod tests {
                         target_slot: 0,
                         bit_index: 1,
                     },
-                    LineValue::Active,
+                    ValidLineValue::Active,
                 ),
                 (
                     CollectRule {
                         target_slot: 0,
                         bit_index: 0,
                     },
-                    LineValue::Inactive,
+                    ValidLineValue::Inactive,
                 ),
             ],
         );
@@ -527,21 +529,21 @@ mod tests {
                         target_slot: 0,
                         bit_index: 0,
                     },
-                    LineValue::Inactive,
+                    ValidLineValue::Inactive,
                 ),
                 (
                     CollectRule {
                         target_slot: 1,
                         bit_index: 1,
                     },
-                    LineValue::Active,
+                    ValidLineValue::Active,
                 ),
                 (
                     CollectRule {
                         target_slot: 1,
                         bit_index: 0,
                     },
-                    LineValue::Inactive,
+                    ValidLineValue::Inactive,
                 ),
             ],
         );
@@ -577,11 +579,11 @@ mod tests {
 
         assert_eq!(
             session.chips[0].request.get_value(2).expect("line 2"),
-            LineValue::Inactive
+            ValidLineValue::Inactive
         );
         assert_eq!(
             session.chips[0].request.get_value(3).expect("line 3"),
-            LineValue::Active
+            ValidLineValue::Active
         );
     }
 }

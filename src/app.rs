@@ -3,6 +3,8 @@ use crate::error::AppError;
 use crate::gpio::Backend;
 use crate::gpio::mock::MockBackend;
 use crate::gpio::mock::MockChipSnapshot;
+#[cfg(target_os = "linux")]
+use crate::gpio::sys::SysBackend;
 use crate::session::SessionConfig;
 use crate::session::SessionHandle;
 use crate::session::SessionReactor;
@@ -13,6 +15,7 @@ use crate::transport::spawn_reader_task;
 use crate::transport::uds::UdsConnection;
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::ErrorKind;
@@ -121,7 +124,7 @@ where
 /// How the mock GPIO backend is selected from the CLI and environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockMode {
-    /// Real backend (currently unavailable).
+    /// Real libgpiod backend. Mapped `device` values are gpiochip paths.
     Off,
     /// Mock backend without the write log.
     On,
@@ -156,11 +159,22 @@ pub struct AppConfig {
 #[derive(Debug)]
 enum SelectedBackend {
     Mock(MockBackend),
+    #[cfg(target_os = "linux")]
+    Real(SysBackend),
 }
 
 fn select_backend(mock: MockMode) -> Result<SelectedBackend, AppError> {
     match mock {
-        MockMode::Off => Err(AppError::RealBackendUnavailable),
+        MockMode::Off => {
+            #[cfg(target_os = "linux")]
+            {
+                Ok(SelectedBackend::Real(SysBackend::new()))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(AppError::RealBackendUnsupported)
+            }
+        }
         MockMode::On => Ok(SelectedBackend::Mock(MockBackend::new())),
         MockMode::OnWithWriteLog(path) => {
             let backend = MockBackend::new().with_write_log(&path).map_err(|source| {
@@ -179,23 +193,54 @@ pub async fn run(config: AppConfig) -> Result<(), AppError> {
     match select_backend(config.mock)? {
         SelectedBackend::Mock(backend) => {
             validate_mock_chip_files(&config.service)?;
-            let runtime = ServiceRuntime::new(
-                Arc::new(backend),
-                ServerConfig {
-                    socket_path: config.service.socket.clone(),
-                },
-                Arc::new(config.service),
-            );
-            tracing::info!(pid = %std::process::id(), "running service");
-            let events = SystemEvent::new();
-            let signals = spawn_signal_task(events.clone())?;
-            let result = runtime.serve(events).await;
-            signals.abort();
-            let _ = signals.await;
-            tracing::info!(pid = %std::process::id(), "service shutdown");
-            result
+            run_with_backend(backend, config.service).await
+        }
+        #[cfg(target_os = "linux")]
+        SelectedBackend::Real(backend) => {
+            validate_real_chip_devices(&backend, &config.service)?;
+            run_with_backend(backend, config.service).await
         }
     }
+}
+
+async fn run_with_backend<B: Backend + 'static>(
+    backend: B,
+    service: ServiceConfig,
+) -> Result<(), AppError> {
+    let runtime = ServiceRuntime::new(
+        Arc::new(backend),
+        ServerConfig {
+            socket_path: service.socket.clone(),
+        },
+        Arc::new(service),
+    );
+    tracing::info!(pid = %std::process::id(), "running service");
+    let events = SystemEvent::new();
+    let signals = spawn_signal_task(events.clone())?;
+    let result = runtime.serve(events).await;
+    signals.abort();
+    let _ = signals.await;
+    tracing::info!(pid = %std::process::id(), "service shutdown");
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn validate_real_chip_devices(
+    backend: &SysBackend,
+    config: &ServiceConfig,
+) -> Result<(), AppError> {
+    let mut seen = BTreeSet::new();
+    for spec in config.gpiod_pins().values() {
+        if !seen.insert(&spec.device) {
+            continue;
+        }
+        if !backend.is_gpiochip_device(&spec.device) {
+            return Err(AppError::InvalidGpiochipDevice {
+                device: spec.device.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_mock_chip_files(config: &ServiceConfig) -> Result<(), AppError> {
@@ -406,8 +451,8 @@ fn cleanup_socket_if_exists(path: &str) -> Result<(), AppError> {
 }
 
 fn spawn_signal_task(events: SystemEvent) -> Result<JoinHandle<()>, AppError> {
-    use tokio::signal::unix::signal;
     use tokio::signal::unix::SignalKind;
+    use tokio::signal::unix::signal;
 
     let mut sigint = signal(SignalKind::interrupt())
         .map_err(|err| AppError::Bootstrap(format!("failed to listen for SIGINT: {err}")))?;
@@ -570,16 +615,22 @@ socket = "{socket}"
     }
 
     #[test]
-    fn select_backend_requires_mock_until_real_backend_exists() {
-        assert!(matches!(
-            select_backend(MockMode::Off),
-            Err(AppError::RealBackendUnavailable)
-        ));
+    fn select_backend_off_selects_real_backend() {
+        #[cfg(target_os = "linux")]
+        {
+            assert!(matches!(
+                select_backend(MockMode::Off),
+                Ok(super::SelectedBackend::Real(_))
+            ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(matches!(
+                select_backend(MockMode::Off),
+                Err(AppError::RealBackendUnsupported)
+            ));
+        }
         assert!(select_backend(MockMode::On).is_ok());
-        assert_eq!(
-            select_backend(MockMode::Off).unwrap_err().to_string(),
-            "real backend unavailable; use --mock"
-        );
     }
 
     #[test]
@@ -591,6 +642,8 @@ socket = "{socket}"
             super::SelectedBackend::Mock(backend) => {
                 assert!(backend.write_log().is_some());
             }
+            #[cfg(target_os = "linux")]
+            super::SelectedBackend::Real(_) => panic!("expected mock backend"),
         }
         assert!(log.exists());
     }
@@ -610,17 +663,13 @@ socket = "{socket}"
     }
 
     #[tokio::test]
-    async fn run_without_mock_fails_before_binding() {
+    async fn run_without_mock_rejects_non_gpiochip_device() {
         let dir = TempDir::new().expect("tempdir");
         let socket = dir.path().join("gpiojsonsvc.sock");
         let xml = dir.path().join("gpiochip0.xml");
         fs::write(&xml, SAMPLE_XML).expect("write xml");
-        let service = write_toml(
-            &dir,
-            socket.to_str().expect("utf8"),
-            xml.to_str().expect("utf8"),
-            7,
-        );
+        let device = xml.to_str().expect("utf8").to_owned();
+        let service = write_toml(&dir, socket.to_str().expect("utf8"), &device, 7);
 
         let error = super::run(AppConfig {
             service,
@@ -628,7 +677,13 @@ socket = "{socket}"
         })
         .await
         .expect_err("real backend");
-        assert!(matches!(error, AppError::RealBackendUnavailable));
+        #[cfg(target_os = "linux")]
+        match error {
+            AppError::InvalidGpiochipDevice { device: got } => assert_eq!(got, device),
+            other => panic!("unexpected error: {other}"),
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(matches!(error, AppError::RealBackendUnsupported));
         assert!(!socket.exists());
     }
 

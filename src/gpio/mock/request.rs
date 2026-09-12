@@ -5,6 +5,7 @@ use crate::gpio::EdgeEventBuffer;
 use crate::gpio::GPIOError;
 use crate::gpio::LineRequest;
 use crate::gpio::LineValue;
+use crate::gpio::ValidLineValue;
 use crate::gpio::WaitStatus;
 
 use super::config::MockLineConfig;
@@ -175,7 +176,7 @@ impl LineRequest for MockLineRequest {
         self.get_values_subset(&self.offsets, values)
     }
 
-    fn set_value(&self, offset: u32, value: LineValue) -> Result<(), GPIOError> {
+    fn set_value(&self, offset: u32, value: ValidLineValue) -> Result<(), GPIOError> {
         let request = {
             let state = self
                 .chip_state
@@ -195,7 +196,11 @@ impl LineRequest for MockLineRequest {
         })
     }
 
-    fn set_values_subset(&self, offsets: &[u32], values: &[LineValue]) -> Result<(), GPIOError> {
+    fn set_values_subset(
+        &self,
+        offsets: &[u32],
+        values: &[ValidLineValue],
+    ) -> Result<(), GPIOError> {
         if offsets.len() != values.len() {
             return Err(GPIOError::LengthMismatch {
                 expected: offsets.len(),
@@ -224,7 +229,7 @@ impl LineRequest for MockLineRequest {
         })
     }
 
-    fn set_values(&self, values: &[LineValue]) -> Result<(), GPIOError> {
+    fn set_values(&self, values: &[ValidLineValue]) -> Result<(), GPIOError> {
         if values.len() != self.offsets.len() {
             return Err(GPIOError::LengthMismatch {
                 expected: self.offsets.len(),

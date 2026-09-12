@@ -244,7 +244,8 @@ async fn cli_without_mock_fails_before_binding() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("real backend unavailable; use --mock"),
+        stderr.contains("not a gpiochip character device")
+            || stderr.contains("real GPIO backend is only supported on Linux"),
         "unexpected stderr: {stderr}"
     );
     assert!(!socket.exists());
@@ -263,7 +264,11 @@ async fn cli_mock_flag_is_required_even_with_env_config() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("real backend unavailable; use --mock"));
+    assert!(
+        stderr.contains("not a gpiochip character device")
+            || stderr.contains("real GPIO backend is only supported on Linux"),
+        "unexpected stderr: {stderr}"
+    );
 }
 
 #[tokio::test]
