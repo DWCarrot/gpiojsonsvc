@@ -91,29 +91,17 @@ pub fn add_set_target<'a>(
     append_set_pins(batch, &target.pins, value)
 }
 
-pub fn fold_get_results(
-    targets: &TargetSelector,
-    rules_and_values: &[(CollectRule, ValidLineValue)],
-) -> PinValuePayload {
-    match targets {
-        TargetSelector::Single(_) => {
-            let value = rules_and_values
-                .iter()
-                .fold(0u8, |accumulated, (rule, line_value)| {
-                    accumulate_bit(accumulated, rule.bit_index, line_value_to_bit(*line_value))
-                });
-            PinValuePayload::Value(value)
-        }
-        TargetSelector::Multiple(names) => {
-            let mut values = vec![0u8; names.len()];
-            for (rule, line_value) in rules_and_values {
-                values[rule.target_slot] = accumulate_bit(
-                    values[rule.target_slot],
-                    rule.bit_index,
-                    line_value_to_bit(*line_value),
-                );
-            }
-            PinValuePayload::Values(values)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetResultSize {
+    Single,
+    Multiple(usize),
+}
+
+impl From<&TargetSelector> for GetResultSize {
+    fn from(targets: &TargetSelector) -> Self {
+        match targets {
+            TargetSelector::Single(_) => Self::Single,
+            TargetSelector::Multiple(names) => Self::Multiple(names.len()),
         }
     }
 }
@@ -121,17 +109,27 @@ pub fn fold_get_results(
 pub fn apply_get_batch<B: Backend>(
     session: &InitializedSession<B>,
     batch: &CombinedOffsets<CollectRule>,
-) -> Result<Vec<(CollectRule, ValidLineValue)>, SessionError<'static>> {
-    let mut readings = Vec::new();
+    size: GetResultSize,
+) -> Result<PinValuePayload, SessionError<'static>> {
+    let mut payload = match size {
+        GetResultSize::Single => PinValuePayload::Value(0),
+        GetResultSize::Multiple(count) => PinValuePayload::Values(vec![0u8; count]),
+    };
+    let slots = match &mut payload {
+        PinValuePayload::Value(value) => std::slice::from_mut(value),
+        PinValuePayload::Values(values) => values.as_mut_slice(),
+    };
+    let mut buffer = vec![LineValue::INACTIVE; batch.max_chip_size()];
     for (chip_index, offsets, rules) in batch.iter() {
         let chip = &session.chips[chip_index as usize];
-        let mut values = vec![LineValue::INACTIVE; offsets.len()];
-        chip.request.get_values_subset(offsets, &mut values)?;
-        for (rule, value) in rules.iter().zip(values) {
-            readings.push((*rule, ValidLineValue::try_from(value)?));
+        let values = &mut buffer[..offsets.len()];
+        chip.request.get_values_subset(offsets, values)?;
+        for (rule, value) in rules.iter().zip(values.iter().cloned()) {
+            let bit = line_value_to_bit(ValidLineValue::try_from(value)?);
+            accumulate_bit(&mut slots[rule.target_slot], rule.bit_index, bit);
         }
     }
-    Ok(readings)
+    Ok(payload)
 }
 
 pub fn apply_set_batch<B: Backend>(
@@ -187,7 +185,7 @@ fn append_set_pins(
 ) -> Result<(), SessionError<'static>> {
     match pins {
         ResolvedPins::Single(pin) => {
-            let line_value = bit_to_line_value(value & 1);
+            let line_value = unsafe { bit_to_line_value_unchecked(value & 1) };
             batch
                 .add_set(pin.chip_index, pin.offset, line_value)
                 .map_err(batch_error_to_session_error)
@@ -195,7 +193,7 @@ fn append_set_pins(
         ResolvedPins::Combined(pins) => {
             for (pin, bit_index) in CombinedResolvedPinsIter::new(pins.as_slice()) {
                 let bit = (value >> bit_index) & 1;
-                let line_value = bit_to_line_value(bit);
+                let line_value = unsafe { bit_to_line_value_unchecked(bit) };
                 batch
                     .add_set(pin.chip_index, pin.offset, line_value)
                     .map_err(batch_error_to_session_error)?;
@@ -205,13 +203,12 @@ fn append_set_pins(
     }
 }
 
+#[inline]
 fn line_value_to_bit(value: ValidLineValue) -> u8 {
-    match value {
-        ValidLineValue::Active => 1,
-        ValidLineValue::Inactive => 0,
-    }
+    value as u8
 }
 
+#[inline]
 fn bit_to_line_value(bit: u8) -> ValidLineValue {
     if bit != 0 {
         ValidLineValue::Active
@@ -220,8 +217,14 @@ fn bit_to_line_value(bit: u8) -> ValidLineValue {
     }
 }
 
-fn accumulate_bit(value: u8, bit_index: usize, bit: u8) -> u8 {
-    value | (bit << bit_index)
+#[inline]
+unsafe fn bit_to_line_value_unchecked(bit: u8) -> ValidLineValue {
+    std::mem::transmute(bit as i32)
+}
+
+#[inline]
+fn accumulate_bit(value: &mut u8, bit_index: usize, bit: u8) {
+    *value |= (bit << bit_index);
 }
 
 fn batch_error_to_session_error(error: CombinedOffsetsError) -> SessionError<'static> {
@@ -249,13 +252,13 @@ mod tests {
 
     use super::CollectRule;
     use super::CombinedOffsets;
+    use super::GetResultSize;
     use super::add_get_target;
     use super::add_set_target;
     use super::apply_get_batch;
     use super::apply_set_batch;
     use super::compile_get_batch;
     use super::compile_set_batch;
-    use super::fold_get_results;
     use crate::session::InitializedSession;
 
     const SAMPLE_XML: &str = r#"<gpiochip id="gpiochip0" label="mock gpiochip0">
@@ -347,13 +350,6 @@ mod tests {
 
         InitializedSession::initialize("init-1".to_owned(), &init_request, &backend, &pins)
             .expect("initialize")
-    }
-
-    fn read_get_batch(
-        session: &InitializedSession<MockBackend>,
-        batch: &crate::session::CombinedOffsets<CollectRule>,
-    ) -> Vec<(CollectRule, ValidLineValue)> {
-        apply_get_batch(session, batch).expect("apply get batch")
     }
 
     #[test]
@@ -487,82 +483,33 @@ mod tests {
     }
 
     #[test]
-    fn fold_get_results_packs_single_and_multiple_targets() {
-        let single = fold_get_results(
-            &TargetSelector::Single("IN".to_owned()),
-            &[(
-                CollectRule {
-                    target_slot: 0,
-                    bit_index: 0,
-                },
-                ValidLineValue::Inactive,
-            )],
-        );
+    fn apply_get_batch_packs_single_and_multiple_targets() {
+        let session = sample_session();
+
+        let single_batch =
+            compile_get_batch(&session.compiled_targets, ["IN"], session.chip_count())
+                .expect("compile single get");
+        let single = apply_get_batch(&session, &single_batch, GetResultSize::Single)
+            .expect("apply single get");
         assert_eq!(single, PinValuePayload::Value(0));
 
-        let combined = fold_get_results(
-            &TargetSelector::Single("IN2".to_owned()),
-            &[
-                (
-                    CollectRule {
-                        target_slot: 0,
-                        bit_index: 1,
-                    },
-                    ValidLineValue::Active,
-                ),
-                (
-                    CollectRule {
-                        target_slot: 0,
-                        bit_index: 0,
-                    },
-                    ValidLineValue::Inactive,
-                ),
-            ],
-        );
+        let combined_batch =
+            compile_get_batch(&session.compiled_targets, ["IN2"], session.chip_count())
+                .expect("compile combined get");
+        let combined = apply_get_batch(&session, &combined_batch, GetResultSize::Single)
+            .expect("apply combined get");
         assert_eq!(combined, PinValuePayload::Value(0b10));
 
-        let multiple = fold_get_results(
-            &TargetSelector::Multiple(vec!["IN".to_owned(), "IN2".to_owned()]),
-            &[
-                (
-                    CollectRule {
-                        target_slot: 0,
-                        bit_index: 0,
-                    },
-                    ValidLineValue::Inactive,
-                ),
-                (
-                    CollectRule {
-                        target_slot: 1,
-                        bit_index: 1,
-                    },
-                    ValidLineValue::Active,
-                ),
-                (
-                    CollectRule {
-                        target_slot: 1,
-                        bit_index: 0,
-                    },
-                    ValidLineValue::Inactive,
-                ),
-            ],
-        );
-        assert_eq!(multiple, PinValuePayload::Values(vec![0, 0b10]));
-    }
-
-    #[test]
-    fn get_batch_reads_and_folds_mock_session_values() {
-        let session = sample_session();
         let selector = TargetSelector::Multiple(vec!["IN".to_owned(), "IN2".to_owned()]);
-        let batch = compile_get_batch(
+        let multiple_batch = compile_get_batch(
             &session.compiled_targets,
             selector.as_slice().iter().map(String::as_str),
             session.chip_count(),
         )
-        .expect("compile get batch");
-        let readings = read_get_batch(&session, &batch);
-        let payload = fold_get_results(&selector, &readings);
-        assert_eq!(payload, PinValuePayload::Values(vec![0, 0b10]));
+        .expect("compile multiple get");
+        let multiple = apply_get_batch(&session, &multiple_batch, GetResultSize::from(&selector))
+            .expect("apply multiple get");
+        assert_eq!(multiple, PinValuePayload::Values(vec![0, 0b10]));
     }
 
     #[test]

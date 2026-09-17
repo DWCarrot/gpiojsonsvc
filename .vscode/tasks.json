@@ -1,0 +1,16 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "prepare mock debug log",
+            "type": "shell",
+            "command": "mkdir -p '${workspaceFolder}/tmp/log' && printf 'GPIOJSONSVC_MOCK_LOG=%s\\n' \"${workspaceFolder}/tmp/log/dumps-$(date +%Y-%m-%d_%H-%M-%S).txt\" > '${workspaceFolder}/tmp/mock-debug.env'",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "close": true
+            }
+        }
+    ]
+}

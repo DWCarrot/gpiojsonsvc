@@ -51,6 +51,14 @@ impl<T> CombinedOffsets<T> {
         self.chips.len()
     }
 
+    pub fn max_chip_size(&self) -> usize {
+        self.chips
+            .iter()
+            .map(|chip| chip.offsets.len())
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn add(
         &mut self,
         chip_index: u32,
@@ -164,6 +172,13 @@ mod tests {
 
         assert_eq!(batch.offsets(0).expect("offsets"), &[1, 2]);
         assert_eq!(batch.offsets(1).expect("offsets"), &[4]);
+        assert_eq!(batch.max_chip_size(), 2);
+    }
+
+    #[test]
+    fn max_chip_size_is_zero_when_all_chips_are_empty() {
+        let batch = CombinedOffsets::<u8>::new(3);
+        assert_eq!(batch.max_chip_size(), 0);
     }
 
     #[test]

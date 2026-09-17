@@ -36,11 +36,11 @@ use crate::system_event::SystemEvent;
 use crate::transport::ConnectionError;
 
 use super::command::ReactorCommand;
+use super::execute::GetResultSize;
 use super::execute::apply_get_batch;
 use super::execute::apply_set_batch;
 use super::execute::compile_get_batch;
 use super::execute::compile_set_batch;
-use super::execute::fold_get_results;
 use super::initialized::InitializedSession;
 use super::initialized::SessionConfig;
 use super::sequence::PendingSetSequence;
@@ -358,11 +358,8 @@ where
         let names = target.as_slice().iter().map(String::as_str);
         let response =
             match compile_get_batch(&session.compiled_targets, names, session.chip_count()) {
-                Ok(batch) => match apply_get_batch(session, &batch) {
-                    Ok(readings) => {
-                        let payload = fold_get_results(target, &readings);
-                        ResponseMessage::pin_value(request_id, payload)
-                    }
+                Ok(batch) => match apply_get_batch(session, &batch, GetResultSize::from(target)) {
+                    Ok(payload) => ResponseMessage::pin_value(request_id, payload),
                     Err(error) => error.into_response(request_id),
                 },
                 Err(error) => error.into_response(request_id),

@@ -48,11 +48,12 @@
                 "${workspaceFolder}/tmp/config.toml",
             ],
             "cwd": "${workspaceFolder}/tmp",
+            "preLaunchTask": "prepare mock debug log",
+            "envFile": "${workspaceFolder}/tmp/mock-debug.env",
             "env": {
-                "GPIOJSONSVC_MOCK_LOG": "${workspaceFolder}/tmp/log/dumps.txt",
                 "RUST_LOG": "debug"
             },
-            "console": "integratedTerminal"
+            "terminal": "integrated"
         }
     ]
 }
