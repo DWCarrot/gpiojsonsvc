@@ -49,13 +49,13 @@ pub fn add_get_target<'a>(
     append_get_pins(batch, target_slot, &target.pins)
 }
 
-pub fn compile_set_batch<'a, I>(
-    compiled: &'a CompiledTargets,
+pub fn compile_set_batch<'n, I>(
+    compiled: &CompiledTargets,
     writes: I,
     chip_count: usize,
-) -> Result<CombinedOffsets<ValidLineValue>, SessionError<'a>>
+) -> Result<CombinedOffsets<ValidLineValue>, SessionError<'n>>
 where
-    I: IntoIterator<Item = (&'a str, u8)>,
+    I: IntoIterator<Item = (&'n str, u8)>,
 {
     let mut batch = CombinedOffsets::new(chip_count);
     for (target_name, value) in writes {
@@ -64,12 +64,12 @@ where
     Ok(batch)
 }
 
-pub fn add_set_target<'a>(
+pub fn add_set_target<'n>(
     batch: &mut CombinedOffsets<ValidLineValue>,
-    compiled: &'a CompiledTargets,
-    target_name: &'a str,
+    compiled: &CompiledTargets,
+    target_name: &'n str,
     value: u8,
-) -> Result<(), SessionError<'a>> {
+) -> Result<(), SessionError<'n>> {
     let target = compiled
         .target(target_name)
         .ok_or(SessionError::UnknownTarget {
@@ -81,7 +81,7 @@ pub fn add_set_target<'a>(
         });
     }
     let width = target.width();
-    if width < 8 && value as usize >= (1usize << width) {
+    if crate::protocol::packed_u8_exceeds_width(width, value) {
         return Err(SessionError::TargetValueOutOfRange {
             target: target_name,
             value,
@@ -327,6 +327,8 @@ mod tests {
                 TargetConfigRequest::Output {
                     pin: PinSelector::Single("gpiochip0:2".to_owned()),
                     drive: None,
+                    initial_value: None,
+                    final_value: None,
                 },
             ),
             (
@@ -337,6 +339,8 @@ mod tests {
                         "gpiochip0:3".to_owned(),
                     ]),
                     drive: None,
+                    initial_value: None,
+                    final_value: None,
                 },
             ),
             (

@@ -30,7 +30,15 @@ Configures the logical targets for this connection. It must be the first success
     "GPIO4_B5": {
       "mode": "output",
       "pin": "gpiochip2:1",
-      "drive": "push_pull"
+      "drive": "push_pull",
+      "initial": 1,
+      "final": 0
+    },
+    "CombinedOUT": {
+      "mode": "output",
+      "pin": ["gpiochip2:2", "gpiochip2:3"],
+      "initial": 2,
+      "final": 1
     },
     "GPIO1_A2": {
       "mode": "trigger",
@@ -46,7 +54,7 @@ Configures the logical targets for this connection. It must be the first success
 | Mode | `pin` | Optional fields |
 | --- | --- | --- |
 | `input` | string, or array of 1–8 strings | `bias`: `as_is`, `disabled`, `pull_up`, `pull_down` |
-| `output` | string, or array of 1–8 strings | `drive`: `push_pull`, `open_drain`, `open_source` |
+| `output` | string, or array of 1–8 strings | `drive`: `push_pull`, `open_drain`, `open_source`; `initial` / `final`: optional packed `u8` |
 | `trigger` | single non-empty string only | `edge`: `rising` (default), `falling`, `both` |
 
 Rules:
@@ -57,8 +65,13 @@ Rules:
 - Unmapped pin strings, missing device files, and missing lines are rejected at `init`.
 - Distinct configured `device` paths are opened once each; pins that share a device share that chip.
 - There is no protocol `default` on outputs and no `filter` on triggers.
+- Output `initial` and `final` are optional packed `u8` values with the same bit order and out-of-range rules as `set` (`>= 2^n` is rejected for width `n`).
+- Omitting `initial` does not override the line's existing value when the output is requested.
+- Omitting `final` means that target is not written during close.
 
 Combined packing: array index 0 is the most significant bit of a `u8`. For `["A","B","C"]`, bit 2 is `A` and bit 0 is `C`.
+
+Graceful close applies every configured `final` value, then releases GPIO. That path runs for client disconnect, explicit session shutdown, service shutdown, command-channel closure, and response-write failure. A failed final write is logged and teardown continues; there is no close reply.
 
 ### `get`
 
@@ -115,7 +128,7 @@ Rules:
 - All steps are compiled before any GPIO write. If compilation fails, nothing is written.
 - All steps are applied in order. Step 0 runs immediately; remaining steps wait for their `lag` in the session reactor. The service replies `ok` after the last step is applied. A later-step apply failure replies `error` instead.
 - A second `set` while a sequence is running returns `a set request is already in progress`. `get` remains allowed.
-- Disconnect cancels an in-progress sequence. Remaining steps are not applied, the `set` reply is not sent, and outputs are not restored to a default.
+- Disconnect cancels an in-progress sequence. Remaining steps are not applied and the `set` reply is not sent. Configured output `final` values are still applied during close.
 
 ## Responses
 
@@ -152,6 +165,8 @@ Examples of session error text:
 - `unknown target \`NAME\``
 - `target \`NAME\` is not readable` / `is not writable`
 - `target \`NAME\` value N exceeds W configured bits`
+- `output target \`NAME\` initial value N exceeds W configured bits`
+- `output target \`NAME\` final value N exceeds W configured bits`
 - `unmapped pin \`PIN\``
 - `device file \`PATH\` is unavailable`
 - `line N is not available on device \`PATH\``

@@ -56,12 +56,18 @@ def build_target_config(
     bias: str | None = None,
     drive: str | None = None,
     edge: str | None = None,
+    initial: int | None = None,
+    final: int | None = None,
 ) -> dict[str, Any]:
     config: dict[str, Any] = {"mode": mode, "pin": pin}
     if mode == "input" and bias is not None:
         config["bias"] = bias
     if mode == "output" and drive is not None:
         config["drive"] = drive
+    if mode == "output" and initial is not None:
+        config["initial"] = initial
+    if mode == "output" and final is not None:
+        config["final"] = final
     if mode == "trigger" and edge is not None:
         config["edge"] = edge
     return config
@@ -201,6 +207,22 @@ def _prompt_lag_ms(readline: Readline) -> int:
         return lag
 
 
+def _prompt_optional_u8(readline: Readline, prompt: str) -> int | None:
+    while True:
+        raw = _prompt_line(readline, prompt)
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            print("value must be an integer 0-255")
+            continue
+        if value < 0 or value > 255:
+            print("value must be an integer 0-255")
+            continue
+        return value
+
+
 def _read_multiline_json(readline: Readline) -> Any:
     """Read JSON until a blank line. Leading blank lines are ignored."""
 
@@ -247,6 +269,7 @@ def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, 
         assert mode is not None
         pin = _prompt_pin(readline, mode)
         bias = drive = edge = None
+        initial = final = None
         if mode == "input":
             bias = _prompt_choice(
                 readline,
@@ -261,6 +284,8 @@ def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, 
                 _OUTPUT_DRIVES,
                 allow_empty=True,
             )
+            initial = _prompt_optional_u8(readline, "initial [0-255, empty=omit]: ")
+            final = _prompt_optional_u8(readline, "final [0-255, empty=omit]: ")
         else:
             edge = _prompt_choice(
                 readline,
@@ -274,6 +299,8 @@ def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, 
             bias=bias,
             drive=drive,
             edge=edge,
+            initial=initial,
+            final=final,
         )
         if not _prompt_yes(readline, "add another target? [y/N]: "):
             break
@@ -597,6 +624,8 @@ def build_init_from_args(args: argparse.Namespace) -> dict[str, Any]:
         bias=args.bias,
         drive=args.drive,
         edge=args.edge,
+        initial=args.initial,
+        final=args.final,
     )
     try:
         return build_init_request({args.name: config}, request_id)
@@ -797,6 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument("--bias", help="Optional input bias (as_is, disabled, pull_up, pull_down)")
     init_parser.add_argument("--drive", help="Optional output drive (push_pull, open_drain, open_source)")
+    init_parser.add_argument("--initial", type=int, help="Optional packed output initial value")
+    init_parser.add_argument("--final", type=int, help="Optional packed output final value")
     init_parser.add_argument("--edge", help="Optional trigger edge (rising, falling, both)")
     init_parser.set_defaults(
         build_payload=build_init_from_args,

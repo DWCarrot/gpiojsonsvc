@@ -69,12 +69,12 @@ GPIOJSONSVC_MOCK_LOG=/tmp/mock-write.log gpiojsonsvc --mock /path/to/gpiojsonsvc
 Each request has a non-empty `id` and an `action`. `init` must succeed once per connection before `get` or `set`. Pin strings in `init` must match `[pins.gpiod]` keys.
 
 ```json
-{"id":"1","action":"init","target":{"LED":{"mode":"output","pin":"GPIO1_B5"}}}
+{"id":"1","action":"init","target":{"LED":{"mode":"output","pin":"GPIO1_B5","initial":1,"final":0}}}
 {"id":"2","action":"get","target":"IN"}
 {"id":"3","action":"set","target":{"LED":1}}
 ```
 
-Combined `input`/`output` targets take up to eight unduplicated pins packed into a `u8` (first pin is the high bit). Trigger targets take a single pin. Stepped `set` is an array of objects; step 0 must not include `lag`, later steps must. The `ok` reply is sent after the last step is applied. Trigger events reuse the `init` request `id`.
+Combined `input`/`output` targets take up to eight unduplicated pins packed into a `u8` (first pin is the high bit). Output targets may also set optional packed `initial` and `final` `u8` fields; omit `initial` to leave the line unchanged at request time, and omit `final` to skip a close write. Configured `final` values are applied on graceful session close (disconnect, session shutdown, and service shutdown). Trigger targets take a single pin. Stepped `set` is an array of objects; step 0 must not include `lag`, later steps must. The `ok` reply is sent after the last step is applied. Trigger events reuse the `init` request `id`.
 
 Full request and response shapes: [docs/protocol.md](docs/protocol.md). Layers and session flow: [docs/architecture.md](docs/architecture.md).
 
@@ -110,7 +110,6 @@ cargo test
 
 Not implemented yet:
 
-- Output-default semantics and restore-on-disconnect
 - Process-wide shared-read / exclusive-write locks
 - Protocol trigger `filter`
 - Real `libgpiod` backend (`src/gpio/sys.rs`)

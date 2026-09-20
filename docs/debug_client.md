@@ -52,6 +52,8 @@ python3 tools/debug_client.py
 # mode [input/output/trigger]: output
 # pin (space-split): GPIO1_B5
 # drive [push_pull/open_drain/open_source, empty=omit]: push_pull
+# initial [0-255, empty=omit]:
+# final [0-255, empty=omit]:
 # add another target? [y/N]: n
 # (prints request JSON, sends, prints response)
 # action [init/get/set/raw, help/quit]: set
@@ -62,7 +64,7 @@ python3 tools/debug_client.py
 # action [init/get/set/raw, help/quit]: quit
 ```
 
-Empty field-by-field lines skip or re-prompt required fields. Optional fields (`bias` / `drive` / `edge`) are omitted when left empty. Validation errors (empty `init` target map, trigger with multiple pins, and similar) print and return to the action prompt without sending or closing the socket.
+Empty field-by-field lines skip or re-prompt required fields. Optional fields (`bias` / `drive` / `edge` / `initial` / `final`) are omitted when left empty. Validation errors (empty `init` target map, trigger with multiple pins, and similar) print and return to the action prompt without sending or closing the socket.
 
 ### Raw JSON (`raw`)
 
@@ -176,6 +178,8 @@ python3 tools/debug_client.py init --name BUS --mode output --pins GPIO1_B5 GPIO
 | --- | --- | --- |
 | `--bias` | `input` | `as_is`, `disabled`, `pull_up`, `pull_down` |
 | `--drive` | `output` | `push_pull`, `open_drain`, `open_source` |
+| `--initial` | `output` | packed `u8` applied when the line is requested |
+| `--final` | `output` | packed `u8` applied on graceful session close |
 | `--edge` | `trigger` | `rising`, `falling`, `both` |
 
 Use either `--pin` or `--pins`, not both. `--pins` is for combined targets; `trigger` still needs a single pin.

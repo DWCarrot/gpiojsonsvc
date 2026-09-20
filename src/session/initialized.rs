@@ -14,17 +14,20 @@ use crate::gpio::LineDirection;
 use crate::gpio::LineDrive;
 use crate::gpio::LineEdge;
 use crate::gpio::LineSettings;
+use crate::gpio::ValidLineValue;
 use crate::protocol::request::BiasMode;
 use crate::protocol::request::DriveMode;
 use crate::protocol::request::EdgeMode;
 use crate::protocol::request::PinSelector;
 use crate::protocol::request::TargetConfigRequest;
-use crate::session::ResolvedPins;
 
+use super::batch::CombinedOffsets;
 use super::compiled::ChipIndices;
 use super::compiled::CompiledTarget;
 use super::compiled::CompiledTargets;
 use super::compiled::ResolvedPin;
+use super::compiled::ResolvedPins;
+use super::execute::compile_set_batch;
 use super::state::SessionError;
 
 pub trait SessionConfig: Send + Sync {
@@ -57,6 +60,8 @@ pub struct InitializedSession<B: Backend> {
     pub compiled_targets: CompiledTargets,
     pub edge_buffer: B::EdgeEventBuffer,
     pub chips: Vec<SessionChip<B>>,
+    /// Compiled packed `final` writes, applied on graceful session close.
+    pub final_batch: CombinedOffsets<ValidLineValue>,
 }
 
 impl<B: Backend> InitializedSession<B> {
@@ -73,8 +78,19 @@ impl<B: Backend> InitializedSession<B> {
                 TargetConfigRequest::Input { pin, bias } => {
                     gpiod_targets_builder.handle_input_target(target_name, pin, bias)?;
                 }
-                TargetConfigRequest::Output { pin, drive } => {
-                    gpiod_targets_builder.handle_output_target(target_name, pin, drive)?;
+                TargetConfigRequest::Output {
+                    pin,
+                    drive,
+                    initial_value,
+                    final_value,
+                } => {
+                    gpiod_targets_builder.handle_output_target(
+                        target_name,
+                        pin,
+                        drive,
+                        *initial_value,
+                        *final_value,
+                    )?;
                 }
                 TargetConfigRequest::Trigger { pin, edge } => {
                     gpiod_targets_builder.handle_trigger_target(target_name, pin, edge)?;
@@ -82,6 +98,12 @@ impl<B: Backend> InitializedSession<B> {
             }
         }
 
+        let chip_count = gpiod_targets_builder.chip_indices.len();
+        let final_batch = compile_set_batch(
+            &gpiod_targets_builder.compiled_targets,
+            gpiod_targets_builder.pending_finals,
+            chip_count,
+        )?;
         let compiled_targets = gpiod_targets_builder.compiled_targets;
         let edge_buffer = backend.new_edge_event_buffer(16)?;
         let chips_data = gpiod_targets_builder.chip_indices.collect();
@@ -110,6 +132,7 @@ impl<B: Backend> InitializedSession<B> {
             compiled_targets,
             edge_buffer,
             chips,
+            final_batch,
         })
     }
 
@@ -122,15 +145,16 @@ struct GPIODChipData<B: Backend> {
     line_config: B::LineConfig,
 }
 
-struct GPIODTargetsBuilder<'b, B: Backend> {
+struct GPIODTargetsBuilder<'a, 'b, B: Backend> {
     backend: &'b B,
     config: &'b dyn SessionConfig,
     chip_indices: ChipIndices<'b, GPIODChipData<B>>,
     compiled_targets: CompiledTargets,
     line_settings: B::LineSettings,
+    pending_finals: Vec<(&'a str, u8)>,
 }
 
-impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'b, B> {
+impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'a, 'b, B> {
     pub fn new(backend: &'b B, config: &'b dyn SessionConfig) -> Result<Self, SessionError<'a>> {
         Ok(Self {
             backend,
@@ -141,6 +165,7 @@ impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'b, B> {
                 trigger_by_pin: BTreeMap::new(),
             },
             line_settings: backend.new_line_settings()?,
+            pending_finals: Vec::new(),
         })
     }
 
@@ -178,6 +203,8 @@ impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'b, B> {
         target_name: &'a str,
         pin: &'a PinSelector,
         drive: &'a Option<DriveMode>,
+        initial: Option<u8>,
+        final_value: Option<u8>,
     ) -> Result<(), SessionError<'a>> {
         let settings = &mut self.line_settings;
         settings.reset();
@@ -185,12 +212,13 @@ impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'b, B> {
         if let Some(drive) = drive {
             settings.set_drive(protocol_drive_to_line_drive(*drive))?;
         }
-        let resolved_pins = handle_pin_selector(
+        let resolved_pins = handle_output_pin_selector(
             self.backend,
             self.config,
-            &self.line_settings,
+            &mut self.line_settings,
             &mut self.chip_indices,
             pin,
+            initial,
         )?;
         let compiled_target = CompiledTarget {
             pins: resolved_pins,
@@ -199,6 +227,9 @@ impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'b, B> {
         self.compiled_targets
             .by_name
             .insert(target_name.to_owned(), compiled_target);
+        if let Some(value) = final_value {
+            self.pending_finals.push((target_name, value));
+        }
         Ok(())
     }
 
@@ -233,6 +264,55 @@ impl<'a, 'b, B: Backend> GPIODTargetsBuilder<'b, B> {
             .insert(target_name.to_owned(), compiled_target);
         Ok(())
     }
+}
+
+fn handle_output_pin_selector<'a, 'b, B: Backend>(
+    backend: &B,
+    config: &'b dyn SessionConfig,
+    line_settings: &mut B::LineSettings,
+    chip_indices: &mut ChipIndices<'b, GPIODChipData<B>>,
+    pin: &'a PinSelector,
+    initial: Option<u8>,
+) -> Result<ResolvedPins, SessionError<'a>> {
+    match pin {
+        PinSelector::Single(pin_key) => {
+            apply_packed_initial_bit(line_settings, initial, 0)?;
+            let resolved =
+                resolve_mapped_pin(backend, config, line_settings, chip_indices, pin_key)?;
+            Ok(ResolvedPins::Single(resolved))
+        }
+        PinSelector::Combined(pin_keys) => {
+            let mut seen = BTreeSet::new();
+            let mut pins: SmallVec<[ResolvedPin; 8]> = SmallVec::new();
+            let width = pin_keys.len() as u32;
+            for (index, pin_key) in pin_keys.iter().enumerate() {
+                apply_packed_initial_bit(line_settings, initial, width - 1 - index as u32)?;
+                let resolved =
+                    resolve_mapped_pin(backend, config, line_settings, chip_indices, pin_key)?;
+                if !seen.insert((resolved.chip_index, resolved.offset)) {
+                    return Err(SessionError::DuplicatePhysicalLocation { pin: pin_key });
+                }
+                pins.push(resolved);
+            }
+            Ok(ResolvedPins::Combined(pins))
+        }
+    }
+}
+
+fn apply_packed_initial_bit<S: LineSettings>(
+    line_settings: &mut S,
+    initial: Option<u8>,
+    bit_index: u32,
+) -> Result<(), GPIOError> {
+    let Some(value) = initial else {
+        return Ok(());
+    };
+    let line_value = if (value >> bit_index) & 1 != 0 {
+        ValidLineValue::Active
+    } else {
+        ValidLineValue::Inactive
+    };
+    line_settings.set_output_value(line_value)
 }
 
 fn handle_pin_selector<'a, 'b, B: Backend>(
@@ -408,6 +488,8 @@ mod tests {
                         "gpiochip0:3".to_owned(),
                     ]),
                     drive: None,
+                    initial_value: None,
+                    final_value: None,
                 },
             ),
             (
@@ -668,6 +750,8 @@ mod tests {
                     "GPIO1_B5".to_owned(),
                 ]),
                 drive: None,
+                initial_value: None,
+                final_value: None,
             },
         )]);
 
@@ -678,5 +762,207 @@ mod tests {
             error,
             SessionError::DuplicatePhysicalLocation { pin: "GPIO1_B5" }
         ));
+    }
+
+    #[test]
+    fn initialize_applies_packed_single_initial_value() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(path, &[("gpiochip0:2", 2)]);
+        let request = BTreeMap::from([(
+            "OUT".to_owned(),
+            TargetConfigRequest::Output {
+                pin: PinSelector::Single("gpiochip0:2".to_owned()),
+                drive: None,
+                initial_value: Some(1),
+                final_value: None,
+            },
+        )]);
+
+        let session =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+                .expect("initialize");
+        assert_eq!(
+            session.chips[0].request.get_value(2).expect("line 2"),
+            ValidLineValue::Active
+        );
+        assert_eq!(session.final_batch.iter().count(), 0);
+    }
+
+    #[test]
+    fn initialize_applies_packed_combined_initial_value() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(path, &[("gpiochip0:2", 2), ("gpiochip0:3", 3)]);
+        let request = BTreeMap::from([(
+            "OUT2".to_owned(),
+            TargetConfigRequest::Output {
+                pin: PinSelector::Combined(smallvec::smallvec![
+                    "gpiochip0:2".to_owned(),
+                    "gpiochip0:3".to_owned(),
+                ]),
+                drive: None,
+                initial_value: Some(0b10),
+                final_value: None,
+            },
+        )]);
+
+        let session =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+                .expect("initialize");
+        let request = &session.chips[0].request;
+        assert_eq!(
+            request.get_value(2).expect("line 2"),
+            ValidLineValue::Active
+        );
+        assert_eq!(
+            request.get_value(3).expect("line 3"),
+            ValidLineValue::Inactive
+        );
+    }
+
+    #[test]
+    fn initialize_preserves_persisted_output_when_initial_is_omitted() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(path, &[("gpiochip0:2", 2), ("gpiochip0:3", 3)]);
+        let request = BTreeMap::from([(
+            "OUT2".to_owned(),
+            TargetConfigRequest::Output {
+                pin: PinSelector::Combined(smallvec::smallvec![
+                    "gpiochip0:2".to_owned(),
+                    "gpiochip0:3".to_owned(),
+                ]),
+                drive: None,
+                initial_value: None,
+                final_value: None,
+            },
+        )]);
+
+        let session =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+                .expect("initialize");
+        let request = &session.chips[0].request;
+        assert_eq!(
+            request.get_value(2).expect("line 2"),
+            ValidLineValue::Inactive
+        );
+        assert_eq!(
+            request.get_value(3).expect("line 3"),
+            ValidLineValue::Active
+        );
+    }
+
+    #[test]
+    fn initialize_compiles_retained_final_batch() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(path, &[("gpiochip0:2", 2), ("gpiochip0:3", 3)]);
+        let request = BTreeMap::from([
+            (
+                "OUT".to_owned(),
+                TargetConfigRequest::Output {
+                    pin: PinSelector::Single("gpiochip0:2".to_owned()),
+                    drive: None,
+                    initial_value: Some(1),
+                    final_value: Some(0),
+                },
+            ),
+            (
+                "OUT3".to_owned(),
+                TargetConfigRequest::Output {
+                    pin: PinSelector::Single("gpiochip0:3".to_owned()),
+                    drive: None,
+                    initial_value: None,
+                    final_value: Some(1),
+                },
+            ),
+        ]);
+
+        let session =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+                .expect("initialize");
+        assert_eq!(session.final_batch.offsets(0).expect("offsets"), &[2, 3]);
+        assert_eq!(
+            session.final_batch.attachments(0).expect("values"),
+            &[ValidLineValue::Inactive, ValidLineValue::Active]
+        );
+        assert_eq!(
+            session.chips[0].request.get_value(2).expect("line 2"),
+            ValidLineValue::Active
+        );
+        assert_eq!(
+            session.chips[0].request.get_value(3).expect("line 3"),
+            ValidLineValue::Active
+        );
+    }
+
+    #[test]
+    fn initialize_compiles_packed_combined_final_batch() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(path, &[("gpiochip0:2", 2), ("gpiochip0:3", 3)]);
+        let request = BTreeMap::from([(
+            "OUT2".to_owned(),
+            TargetConfigRequest::Output {
+                pin: PinSelector::Combined(smallvec::smallvec![
+                    "gpiochip0:2".to_owned(),
+                    "gpiochip0:3".to_owned(),
+                ]),
+                drive: None,
+                initial_value: None,
+                final_value: Some(0b10),
+            },
+        )]);
+
+        let session =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+                .expect("initialize");
+        assert_eq!(session.final_batch.offsets(0).expect("offsets"), &[2, 3]);
+        assert_eq!(
+            session.final_batch.attachments(0).expect("values"),
+            &[ValidLineValue::Active, ValidLineValue::Inactive]
+        );
+    }
+
+    #[test]
+    fn initialize_rejects_conflicting_final_values_on_overlapping_outputs() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(path, &[("gpiochip0:2", 2), ("gpiochip0:3", 3)]);
+        let request = BTreeMap::from([
+            (
+                "OUT".to_owned(),
+                TargetConfigRequest::Output {
+                    pin: PinSelector::Single("gpiochip0:2".to_owned()),
+                    drive: None,
+                    initial_value: None,
+                    final_value: Some(0),
+                },
+            ),
+            (
+                "OUT2".to_owned(),
+                TargetConfigRequest::Output {
+                    pin: PinSelector::Combined(smallvec::smallvec![
+                        "gpiochip0:2".to_owned(),
+                        "gpiochip0:3".to_owned(),
+                    ]),
+                    drive: None,
+                    initial_value: None,
+                    final_value: Some(0b10),
+                },
+            ),
+        ]);
+
+        let error = InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+            .err()
+            .expect("conflicting finals");
+        assert!(error.to_string().contains("conflicting set values"));
     }
 }

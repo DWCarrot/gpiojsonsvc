@@ -479,6 +479,77 @@ async fn uds_unmapped_pin_returns_correlated_error() {
 }
 
 #[tokio::test]
+async fn uds_init_initial_final_and_omitted_values() {
+    let mut harness = Harness::spawn_mock().await;
+    let mut client = harness.connect().await;
+
+    let init = client
+        .rpc(&json!({
+            "id": "init-1",
+            "action": "init",
+            "target": {
+                "OUT": {
+                    "mode": "output",
+                    "pin": "gpiochip0:7",
+                    "initial": 1,
+                    "final": 0
+                },
+                "LED": { "mode": "output", "pin": "GPIO1_B5" }
+            }
+        }))
+        .await;
+    assert_eq!(init["status"], "ok");
+    wait_for_line_level(&harness.chip0, "7", 'H').await;
+    wait_for_line_level(&harness.chip1, "13", 'L').await;
+
+    drop(client);
+    wait_for_line_level(&harness.chip0, "7", 'L').await;
+    wait_for_line_level(&harness.chip1, "13", 'L').await;
+
+    let _ = harness.child.start_kill();
+}
+
+#[tokio::test]
+async fn sigint_applies_final_output_values() {
+    let mut harness = Harness::spawn_mock().await;
+    let mut client = harness.connect().await;
+    let init = client
+        .rpc(&json!({
+            "id": "init-1",
+            "action": "init",
+            "target": {
+                "OUT": {
+                    "mode": "output",
+                    "pin": "gpiochip0:7",
+                    "initial": 1,
+                    "final": 0
+                }
+            }
+        }))
+        .await;
+    assert_eq!(init["status"], "ok");
+    wait_for_line_level(&harness.chip0, "7", 'H').await;
+    let _connected = client;
+
+    let pid = harness.child.id().expect("child pid");
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .expect("send SIGINT");
+
+    let status = tokio::time::timeout(Duration::from_secs(3), harness.child.wait())
+        .await
+        .expect("service did not exit after SIGINT")
+        .expect("wait for service");
+    assert!(
+        status.success(),
+        "expected graceful exit after SIGINT, got {status:?}"
+    );
+    wait_for_line_level(&harness.chip0, "7", 'L').await;
+}
+
+#[tokio::test]
 async fn sigint_exits_while_a_client_is_connected() {
     let mut harness = Harness::spawn_mock().await;
     let mut client = harness.connect().await;

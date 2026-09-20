@@ -211,6 +211,10 @@ impl<'a, T> ChipIndices<'a, T> {
         )
     }
 
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     pub fn collect(self) -> Vec<(&'a str, Option<T>)> {
         unsafe {
             let mut devices: Vec<MaybeUninit<(&str, Option<T>)>> =

@@ -23,6 +23,7 @@ use super::state::apply_persisted_metadata;
 use super::state::apply_request_output_values;
 use super::state::offset_in_use;
 use super::state::persist_snapshot;
+use super::state::persist_snapshot_for_line_write;
 use super::watcher::ChipWatcher;
 
 /// One XML-backed GPIO chip opened through [`MockBackend::open_chip`].
@@ -191,13 +192,18 @@ impl Chip for MockChip {
             apply_persisted_metadata(line, request);
         }
 
-        apply_request_output_values(&mut state.snapshot, line_cfg, &line_settings)?;
+        let applied_output_values =
+            apply_request_output_values(&mut state.snapshot, line_cfg, &line_settings)?;
         for &offset in &offsets {
             if let Some(line) = state.snapshot.lines.get_mut(&offset) {
                 line.consumer = consumer.clone();
             }
         }
-        persist_snapshot(&state)?;
+        if applied_output_values {
+            persist_snapshot_for_line_write(&state)?;
+        } else {
+            persist_snapshot(&state)?;
+        }
 
         let request_id = state.next_request_id;
         state.next_request_id += 1;

@@ -1055,6 +1055,46 @@ mod tests {
     }
 
     #[test]
+    fn write_log_records_request_time_output_value() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let log_file = NamedTempFile::new().expect("temp log file");
+        let log_path = log_file.path().to_path_buf();
+
+        let backend = MockBackend::new()
+            .with_write_log(&log_path)
+            .expect("open write log");
+        let chip = backend.open_chip(path).expect("open chip");
+
+        let mut line_cfg = backend.new_line_config().expect("line config");
+        let mut output_settings = backend.new_line_settings().expect("line settings");
+        output_settings
+            .set_direction(LineDirection::Output)
+            .expect("direction");
+        output_settings
+            .set_output_value(ValidLineValue::Active)
+            .expect("output value");
+        line_cfg
+            .add_line_settings(&[1], &output_settings)
+            .expect("configure output");
+        let _request = chip.request_lines(None, &line_cfg).expect("request lines");
+
+        backend.write_log().expect("write log").flush();
+        let content = fs::read_to_string(&log_path).expect("read write log");
+        let blocks = parse_write_log_blocks(&content);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "request-time output value should append one dump"
+        );
+        let snapshot = parse_chip_xml(&blocks[0].1).expect("parse dump");
+        assert_eq!(
+            snapshot.lines.get(&1).expect("line 1").persisted_level,
+            LineLevel::High
+        );
+    }
+
+    #[test]
     fn write_log_skips_request_and_drop_persist() {
         let file = write_chip_file(SAMPLE_XML);
         let path = file.path().to_str().expect("utf8 path");
@@ -1073,7 +1113,7 @@ mod tests {
             let after_request = fs::read_to_string(&log_path).expect("read write log");
             assert!(
                 after_request.is_empty(),
-                "request_lines persist must not append dump blocks"
+                "request_lines without an explicit output value must not append dump blocks"
             );
 
             request

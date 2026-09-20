@@ -82,6 +82,10 @@ pub enum TargetConfigRequest {
         pin: PinSelector,
         #[serde(default)]
         drive: Option<DriveMode>,
+        #[serde(default, rename = "initial")]
+        initial_value: Option<u8>,
+        #[serde(default, rename = "final")]
+        final_value: Option<u8>,
     },
     #[serde(rename = "trigger")]
     Trigger {

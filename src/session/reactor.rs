@@ -241,7 +241,6 @@ where
             tokio::select! {
                 code = events.recv(&mut seen_seq) => {
                     if code == SystemEvent::SHUTDOWN {
-                        self.begin_close();
                         break;
                     }
                 }
@@ -252,10 +251,7 @@ where
                                 break;
                             }
                         }
-                        None => {
-                            self.begin_close();
-                            break;
-                        }
+                        None => break,
                     }
                 }
                 _ = sleep_until_optional(next_deadline), if next_deadline.is_some() => {
@@ -267,13 +263,7 @@ where
                 }
             }
         }
-        let _ = self.writer.close().await;
-        self.state = SessionState::Closed;
-        tracing::info!(
-            session_id = self.session_id,
-            connection = %self.connection_info,
-            "session ended"
-        );
+        self.finish_close().await;
     }
 
     async fn handle_command(&mut self, command: ReactorCommand) -> Result<bool, W::Error> {
@@ -290,10 +280,7 @@ where
                 self.handle_scheduled_wake(token).await?;
                 Ok(true)
             }
-            ReactorCommand::TransportClosed | ReactorCommand::Shutdown => {
-                self.begin_close();
-                Ok(false)
-            }
+            ReactorCommand::TransportClosed | ReactorCommand::Shutdown => Ok(false),
         }
     }
 
@@ -643,10 +630,37 @@ where
     }
 
     fn begin_close(&mut self) {
+        if matches!(self.state, SessionState::Closing | SessionState::Closed) {
+            return;
+        }
         self.state = SessionState::Closing;
         self.clear_sequence();
         self.stop_gpio_watchers();
-        self.initialized = None;
+    }
+
+    /// Apply retained `final` values, then release GPIO and the response writer.
+    ///
+    /// Shared by disconnect, explicit shutdown, service shutdown, command-channel
+    /// closure, and response-write failure. Final-write errors are logged and
+    /// teardown continues because no reply channel is reliable here.
+    async fn finish_close(&mut self) {
+        self.begin_close();
+        if let Some(session) = self.initialized.take() {
+            if let Err(error) = apply_set_batch(&session, &session.final_batch) {
+                tracing::warn!(
+                    session_id = self.session_id,
+                    error = %error,
+                    "failed to apply session final output values"
+                );
+            }
+        }
+        let _ = self.writer.close().await;
+        self.state = SessionState::Closed;
+        tracing::info!(
+            session_id = self.session_id,
+            connection = %self.connection_info,
+            "session ended"
+        );
     }
 }
 
@@ -826,6 +840,8 @@ mod tests {
                 TargetConfigRequest::Output {
                     pin: PinSelector::Single("gpiochip0:2".to_owned()),
                     drive: None,
+                    initial_value: None,
+                    final_value: None,
                 },
             ),
         ])
@@ -845,6 +861,8 @@ mod tests {
                 TargetConfigRequest::Output {
                     pin: PinSelector::Single("gpiochip0:2".to_owned()),
                     drive: None,
+                    initial_value: None,
+                    final_value: None,
                 },
             ),
         ])
@@ -880,8 +898,15 @@ mod tests {
             (
                 "gpiochip0:2".to_owned(),
                 crate::config::GPIODPinSpec {
-                    device: path,
+                    device: path.clone(),
                     line: 2,
+                },
+            ),
+            (
+                "gpiochip0:3".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path,
+                    line: 3,
                 },
             ),
         ]));
@@ -912,6 +937,45 @@ mod tests {
             .await
             .expect("response timed out")
             .expect("response channel closed")
+    }
+
+    fn persisted_line(chip_file: &NamedTempFile, offset: u32) -> LineLevel {
+        let snapshot =
+            parse_chip_xml(&fs::read_to_string(chip_file.path()).expect("read chip xml"))
+                .expect("parse chip xml");
+        snapshot.lines.get(&offset).expect("line").persisted_level
+    }
+
+    fn output_target(
+        pin: PinSelector,
+        initial_value: Option<u8>,
+        final_value: Option<u8>,
+    ) -> TargetConfigRequest {
+        TargetConfigRequest::Output {
+            pin,
+            drive: None,
+            initial_value,
+            final_value,
+        }
+    }
+
+    async fn init_ok(
+        handle: &SessionHandle,
+        responses: &mut tokio::sync::mpsc::UnboundedReceiver<ResponseMessage>,
+        target: BTreeMap<String, TargetConfigRequest>,
+    ) {
+        send_request(
+            handle,
+            RequestMessage {
+                id: "init-1".to_owned(),
+                payload: RequestPayload::Init { target },
+            },
+        )
+        .await;
+        assert_eq!(
+            recv_response(responses).await,
+            ResponseMessage::ok("init-1")
+        );
     }
 
     fn line0_xml(level: &str) -> String {
@@ -1304,6 +1368,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn init_applies_packed_single_initial_value() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let (handle, mut responses, join) = spawn_reactor(&chip_file);
+
+        init_ok(
+            &handle,
+            &mut responses,
+            BTreeMap::from([(
+                "OUT".to_owned(),
+                output_target(PinSelector::Single("gpiochip0:2".to_owned()), Some(1), None),
+            )]),
+        )
+        .await;
+
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
+
+        handle
+            .sender()
+            .send(ReactorCommand::TransportClosed)
+            .await
+            .expect("close");
+        join.await.expect("reactor exit");
+    }
+
+    #[tokio::test]
+    async fn init_applies_packed_combined_initial_value() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let (handle, mut responses, join) = spawn_reactor(&chip_file);
+
+        init_ok(
+            &handle,
+            &mut responses,
+            BTreeMap::from([(
+                "OUT2".to_owned(),
+                output_target(
+                    PinSelector::Combined(smallvec::smallvec![
+                        "gpiochip0:2".to_owned(),
+                        "gpiochip0:3".to_owned(),
+                    ]),
+                    Some(0b10),
+                    None,
+                ),
+            )]),
+        )
+        .await;
+
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
+
+        handle
+            .sender()
+            .send(ReactorCommand::TransportClosed)
+            .await
+            .expect("close");
+        join.await.expect("reactor exit");
+    }
+
+    #[tokio::test]
+    async fn init_omitting_initial_preserves_persisted_output() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let (handle, mut responses, join) = spawn_reactor(&chip_file);
+
+        init_ok(
+            &handle,
+            &mut responses,
+            BTreeMap::from([(
+                "OUT2".to_owned(),
+                output_target(
+                    PinSelector::Combined(smallvec::smallvec![
+                        "gpiochip0:2".to_owned(),
+                        "gpiochip0:3".to_owned(),
+                    ]),
+                    None,
+                    None,
+                ),
+            )]),
+        )
+        .await;
+
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::Low);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
+
+        handle
+            .sender()
+            .send(ReactorCommand::TransportClosed)
+            .await
+            .expect("close");
+        join.await.expect("reactor exit");
+    }
+
+    #[tokio::test]
+    async fn disconnect_applies_packed_final_output_values() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let (handle, mut responses, join) = spawn_reactor(&chip_file);
+
+        init_ok(
+            &handle,
+            &mut responses,
+            BTreeMap::from([(
+                "OUT2".to_owned(),
+                output_target(
+                    PinSelector::Combined(smallvec::smallvec![
+                        "gpiochip0:2".to_owned(),
+                        "gpiochip0:3".to_owned(),
+                    ]),
+                    Some(0b01),
+                    Some(0b10),
+                ),
+            )]),
+        )
+        .await;
+
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::Low);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
+
+        handle
+            .sender()
+            .send(ReactorCommand::TransportClosed)
+            .await
+            .expect("close");
+        join.await.expect("reactor exit");
+
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
+    }
+
+    #[tokio::test]
     async fn transport_closed_ends_the_reactor_task() {
         let chip_file = write_chip_file(SAMPLE_XML);
         let (handle, mut responses, join) = spawn_reactor(&chip_file);
@@ -1373,6 +1565,68 @@ mod tests {
             .await
             .expect("reactor did not exit")
             .expect("reactor join");
+    }
+
+    #[tokio::test]
+    async fn service_shutdown_applies_final_output_values() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let path = chip_file.path().to_str().expect("utf8 path").to_owned();
+        let config: Arc<dyn super::SessionConfig> = Arc::new(BTreeMap::from([
+            (
+                "gpiochip0:2".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path.clone(),
+                    line: 2,
+                },
+            ),
+            (
+                "gpiochip0:3".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path,
+                    line: 3,
+                },
+            ),
+        ]));
+        let (responses_tx, mut responses_rx) = tokio::sync::mpsc::unbounded_channel();
+        let writer = TestResponseSink { tx: responses_tx };
+        let events = crate::system_event::SystemEvent::new();
+        let (handle, join) = SessionReactor::spawn_with_capacities(
+            1,
+            Arc::new(MockBackend::new()),
+            config,
+            writer,
+            "test://reactor".to_owned(),
+            32,
+            events.clone(),
+        );
+
+        init_ok(
+            &handle,
+            &mut responses_rx,
+            BTreeMap::from([(
+                "OUT2".to_owned(),
+                output_target(
+                    PinSelector::Combined(smallvec::smallvec![
+                        "gpiochip0:2".to_owned(),
+                        "gpiochip0:3".to_owned(),
+                    ]),
+                    Some(0b01),
+                    Some(0b10),
+                ),
+            )]),
+        )
+        .await;
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::Low);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
+
+        events.emit(crate::system_event::SystemEvent::SHUTDOWN);
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("reactor did not exit")
+            .expect("reactor join");
+
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
     }
 
     #[tokio::test]

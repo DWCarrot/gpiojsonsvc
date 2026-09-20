@@ -5,6 +5,9 @@ pub mod response;
 use serde::Deserialize;
 use thiserror::Error;
 
+use self::request::RequestPayload;
+use self::request::TargetConfigRequest;
+
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     #[error("request line must not contain line terminators")]
@@ -40,10 +43,61 @@ pub fn parse_request_line(line: &str) -> Result<request::RequestMessage, Protoco
     }
 
     match envelope.action.as_str() {
-        "init" | "get" | "set" => serde_json::from_str::<request::RequestMessage>(line)
-            .map_err(|error| ProtocolError::InvalidJson(error.to_string())),
+        "init" | "get" | "set" => {
+            let request = serde_json::from_str::<request::RequestMessage>(line)
+                .map_err(|error| ProtocolError::InvalidJson(error.to_string()))?;
+            validate_request(&request)?;
+            Ok(request)
+        }
         other => Err(ProtocolError::UnknownAction(other.to_owned())),
     }
+}
+
+/// Packed `u8` values use the same width rule as `set`: a target of width `n`
+/// (`n < 8`) rejects values `>= 2^n`. Width 8 accepts the full `u8` range.
+pub(crate) fn packed_u8_exceeds_width(width: usize, value: u8) -> bool {
+    width < 8 && (value as usize) >= (1usize << width)
+}
+
+fn validate_request(request: &request::RequestMessage) -> Result<(), ProtocolError> {
+    let RequestPayload::Init { target } = &request.payload else {
+        return Ok(());
+    };
+
+    for (name, config) in target {
+        let TargetConfigRequest::Output {
+            pin,
+            initial_value: initial,
+            final_value,
+            ..
+        } = config
+        else {
+            continue;
+        };
+        let width = pin.len();
+        if let Some(value) = *initial {
+            validate_packed_output_value(name, "initial", width, value)?;
+        }
+        if let Some(value) = *final_value {
+            validate_packed_output_value(name, "final", width, value)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_packed_output_value(
+    target: &str,
+    field: &str,
+    width: usize,
+    value: u8,
+) -> Result<(), ProtocolError> {
+    if packed_u8_exceeds_width(width, value) {
+        return Err(ProtocolError::Validation(format!(
+            "output target `{target}` {field} value {value} exceeds {width} configured bits"
+        )));
+    }
+    Ok(())
 }
 
 pub fn serialize_response(response: &response::ResponseMessage) -> Result<String, ProtocolError> {
@@ -114,7 +168,7 @@ mod tests {
                     let n = name.as_str();
                     let (c, u) = match &config {
                         TargetConfigRequest::Input { pin, bias } => ("input", pin.len()),
-                        TargetConfigRequest::Output { pin, drive } => ("output", pin.len()),
+                        TargetConfigRequest::Output { pin, .. } => ("output", pin.len()),
                         TargetConfigRequest::Trigger { pin, edge } => ("trigger", 1),
                     };
                     println!("name: {n}, config: {c}, unit: {u}");
@@ -356,6 +410,219 @@ mod tests {
                     other => panic!("expected combined pin selector, got {other:?}"),
                 },
                 other => panic!("expected input target, got {other:?}"),
+            },
+            other => panic!("expected init request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_output_target_omitting_initial_and_final() {
+        let line = json_line(
+            r#"
+            {
+              "id": "init-1",
+              "action": "init",
+              "target": {
+                "GPIO4_B5": {
+                  "mode": "output",
+                  "pin": "gpiochip2:1",
+                  "drive": "push_pull"
+                }
+              }
+            }
+        "#,
+        );
+
+        let request = parse_request_line(&line).expect("init request should parse");
+
+        match request.payload {
+            RequestPayload::Init { target } => match target.get("GPIO4_B5") {
+                Some(super::request::TargetConfigRequest::Output {
+                    pin,
+                    drive,
+                    initial_value: initial,
+                    final_value,
+                }) => {
+                    assert!(matches!(pin, PinSelector::Single(name) if name == "gpiochip2:1"));
+                    assert_eq!(*drive, Some(super::request::DriveMode::PushPull));
+                    assert_eq!(*initial, None);
+                    assert_eq!(*final_value, None);
+                }
+                other => panic!("expected output target, got {other:?}"),
+            },
+            other => panic!("expected init request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_output_target_with_packed_initial_and_final() {
+        let line = json_line(
+            r#"
+            {
+              "id": "init-1",
+              "action": "init",
+              "target": {
+                "GPIO4_B5": {
+                  "mode": "output",
+                  "pin": "gpiochip2:1",
+                  "initial": 1,
+                  "final": 0
+                }
+              }
+            }
+        "#,
+        );
+
+        let request = parse_request_line(&line).expect("init request should parse");
+
+        match request.payload {
+            RequestPayload::Init { target } => match target.get("GPIO4_B5") {
+                Some(super::request::TargetConfigRequest::Output {
+                    initial_value: initial,
+                    final_value,
+                    ..
+                }) => {
+                    assert_eq!(*initial, Some(1));
+                    assert_eq!(*final_value, Some(0));
+                }
+                other => panic!("expected output target, got {other:?}"),
+            },
+            other => panic!("expected init request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_combined_output_target_with_packed_values() {
+        let line = json_line(
+            r#"
+            {
+              "id": "init-1",
+              "action": "init",
+              "target": {
+                "CombinedOUT": {
+                  "mode": "output",
+                  "pin": ["gpiochip0:3", "gpiochip1:4", "gpiochip1:5"],
+                  "initial": 5,
+                  "final": 2
+                }
+              }
+            }
+        "#,
+        );
+
+        let request = parse_request_line(&line).expect("init request should parse");
+
+        match request.payload {
+            RequestPayload::Init { target } => match target.get("CombinedOUT") {
+                Some(super::request::TargetConfigRequest::Output {
+                    pin,
+                    initial_value: initial,
+                    final_value,
+                    ..
+                }) => {
+                    assert_eq!(pin.len(), 3);
+                    assert_eq!(*initial, Some(0b101));
+                    assert_eq!(*final_value, Some(0b010));
+                }
+                other => panic!("expected combined output target, got {other:?}"),
+            },
+            other => panic!("expected init request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_output_initial_out_of_range_for_target_width() {
+        let line = json_line(
+            r#"
+            {
+              "id": "init-1",
+              "action": "init",
+              "target": {
+                "GPIO4_B5": {
+                  "mode": "output",
+                  "pin": "gpiochip2:1",
+                  "initial": 2
+                }
+              }
+            }
+        "#,
+        );
+
+        let error = parse_request_line(&line).expect_err("single-bit initial 2 is out of range");
+        assert!(
+            error
+                .to_string()
+                .contains("output target `GPIO4_B5` initial value 2 exceeds 1 configured bits")
+        );
+    }
+
+    #[test]
+    fn rejects_output_final_out_of_range_for_combined_width() {
+        let line = json_line(
+            r#"
+            {
+              "id": "init-1",
+              "action": "init",
+              "target": {
+                "CombinedOUT": {
+                  "mode": "output",
+                  "pin": ["gpiochip0:3", "gpiochip1:4", "gpiochip1:5"],
+                  "final": 8
+                }
+              }
+            }
+        "#,
+        );
+
+        let error = parse_request_line(&line).expect_err("3-bit final 8 is out of range");
+        assert!(
+            error
+                .to_string()
+                .contains("output target `CombinedOUT` final value 8 exceeds 3 configured bits")
+        );
+    }
+
+    #[test]
+    fn accepts_full_u8_range_for_eight_pin_output() {
+        let line = json_line(
+            r#"
+            {
+              "id": "init-1",
+              "action": "init",
+              "target": {
+                "WideOUT": {
+                  "mode": "output",
+                  "pin": [
+                    "gpiochip0:0",
+                    "gpiochip0:1",
+                    "gpiochip0:2",
+                    "gpiochip0:3",
+                    "gpiochip0:4",
+                    "gpiochip0:5",
+                    "gpiochip0:6",
+                    "gpiochip0:7"
+                  ],
+                  "initial": 255,
+                  "final": 128
+                }
+              }
+            }
+        "#,
+        );
+
+        let request = parse_request_line(&line).expect("8-bit values should parse");
+
+        match request.payload {
+            RequestPayload::Init { target } => match target.get("WideOUT") {
+                Some(super::request::TargetConfigRequest::Output {
+                    initial_value: initial,
+                    final_value,
+                    ..
+                }) => {
+                    assert_eq!(*initial, Some(255));
+                    assert_eq!(*final_value, Some(128));
+                }
+                other => panic!("expected 8-pin output target, got {other:?}"),
             },
             other => panic!("expected init request, got {other:?}"),
         }

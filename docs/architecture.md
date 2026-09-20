@@ -66,7 +66,7 @@ After a successful `init`, the reactor:
 - watches request fds for chips that have trigger lines
 - on edge events, maps `(chip_index, offset)` to the trigger target name and writes `status: event`
 
-Immediate `set` compiles a write batch and applies it, then replies `ok`. Stepped `set` compiles every step first, applies step 0 immediately, sleeps until each remaining accumulated lag, and replies `ok` after the last step is applied. Disconnect aborts watchers and drops the initialized session without restoring output defaults.
+Immediate `set` compiles a write batch and applies it, then replies `ok`. Stepped `set` compiles every step first, applies step 0 immediately, sleeps until each remaining accumulated lag, and replies `ok` after the last step is applied. Disconnect aborts watchers, applies any compiled output `final` values, then drops the initialized session.
 
 ## Mock backend
 
@@ -84,7 +84,7 @@ The mock is always compiled in. Gating it behind a Cargo feature is a later buil
 
 ## Deferred behavior
 
-- Output-default values, sequence cancel policy, and restore-on-disconnect
+- Sequence cancel policy
 - Process-wide shared-read / exclusive-write locks keyed by physical pin
 - Software trigger filtering
 - `libgpiod` FFI on Rock5B

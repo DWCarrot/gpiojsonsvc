@@ -184,6 +184,10 @@ pub fn apply_persisted_metadata(
     }
 }
 
+/// Applies request-time output values from per-line settings or `set_output_values`.
+///
+/// Returns `true` when at least one explicit output value was applied, so the
+/// caller can dump the write log the same way as `set_value`.
 pub fn apply_request_output_values(
     snapshot: &mut MockChipSnapshot,
     line_cfg: &MockLineConfig,
@@ -194,7 +198,7 @@ pub fn apply_request_output_values(
     line_cfg.get_configured_offsets(&mut offsets);
 
     let override_values = line_cfg.configured_output_values();
-    let mut changed = false;
+    let mut applied = false;
 
     for (index, offset) in offsets.iter().enumerate() {
         let request = line_settings
@@ -220,14 +224,12 @@ pub fn apply_request_output_values(
 
         if let Some(logical) = logical_value {
             let physical = to_physical_value(logical, request.active_low);
-            if line.persisted_level != physical {
-                line.persisted_level = physical;
-                changed = true;
-            }
+            line.persisted_level = physical;
+            applied = true;
         }
     }
 
-    Ok(changed)
+    Ok(applied)
 }
 
 /// Applies external XML file content for watcher-side edge detection only.

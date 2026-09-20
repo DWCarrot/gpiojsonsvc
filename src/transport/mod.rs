@@ -204,6 +204,8 @@ mod tests {
                 TargetConfigRequest::Output {
                     pin: PinSelector::Single("gpiochip0:1".to_owned()),
                     drive: None,
+                    initial_value: None,
+                    final_value: None,
                 },
             ),
         ])
