@@ -352,7 +352,7 @@ mod tests {
             ),
         ]);
 
-        InitializedSession::initialize("init-1".to_owned(), &init_request, &backend, &pins)
+        InitializedSession::initialize("init-1".to_owned(), &init_request, &backend, &pins, "svc_1")
             .expect("initialize")
     }
 

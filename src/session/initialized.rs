@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use smallvec::SmallVec;
 
 use crate::config::GPIODPinSpec;
+use crate::config::GpioConsumer;
 use crate::config::ServiceConfig;
 use crate::gpio::Backend;
 use crate::gpio::Chip;
@@ -14,6 +15,7 @@ use crate::gpio::LineDirection;
 use crate::gpio::LineDrive;
 use crate::gpio::LineEdge;
 use crate::gpio::LineSettings;
+use crate::gpio::RequestConfig;
 use crate::gpio::ValidLineValue;
 use crate::protocol::request::BiasMode;
 use crate::protocol::request::DriveMode;
@@ -32,11 +34,22 @@ use super::state::SessionError;
 
 pub trait SessionConfig: Send + Sync {
     fn resolve_gpiod_pin(&self, pin: &str) -> Option<&GPIODPinSpec>;
+
+    /// Render `service.gpio-consumer` for `session_id`.
+    ///
+    /// Test pin-map implementations use the default template `svc_{id}`.
+    fn render_gpio_consumer(&self, session_id: u64) -> String {
+        GpioConsumer::default().render(session_id)
+    }
 }
 
 impl SessionConfig for ServiceConfig {
     fn resolve_gpiod_pin(&self, pin: &str) -> Option<&GPIODPinSpec> {
         ServiceConfig::resolve_gpiod_pin(self, pin)
+    }
+
+    fn render_gpio_consumer(&self, session_id: u64) -> String {
+        self.gpio_consumer.render(session_id)
     }
 }
 
@@ -70,6 +83,7 @@ impl<B: Backend> InitializedSession<B> {
         request: &'a BTreeMap<String, TargetConfigRequest>,
         backend: &B,
         config: &dyn SessionConfig,
+        consumer: &str,
     ) -> Result<Self, SessionError<'a>> {
         let mut gpiod_targets_builder = GPIODTargetsBuilder::new(backend, config)?;
 
@@ -108,6 +122,9 @@ impl<B: Backend> InitializedSession<B> {
         let edge_buffer = backend.new_edge_event_buffer(16)?;
         let chips_data = gpiod_targets_builder.chip_indices.collect();
 
+        let mut req_cfg = backend.new_request_config()?;
+        req_cfg.set_consumer(consumer);
+
         let mut chips = Vec::new();
         for (chip_index, (device, chip_data)) in chips_data.into_iter().enumerate() {
             let Some(chip_data) = chip_data else {
@@ -117,7 +134,7 @@ impl<B: Backend> InitializedSession<B> {
                 .open_chip(device)
                 .map_err(|error| map_open_chip_error(device, error))?;
             let request = chip
-                .request_lines(None, &chip_data.line_config)
+                .request_lines(Some(&req_cfg), &chip_data.line_config)
                 .map_err(|error| map_request_lines_error(device, error))?;
             chips.push(SessionChip {
                 chip_index: chip_index as u32,
@@ -426,9 +443,12 @@ mod tests {
     use std::fs;
 
     use crate::config::GPIODPinSpec;
+    use crate::config::GpioConsumer;
+    use crate::config::ServiceConfig;
     use crate::gpio::Chip;
     use crate::gpio::ChipInfo;
     use crate::gpio::EdgeEventBuffer;
+    use crate::gpio::LineInfo;
     use crate::gpio::LineRequest;
     use crate::gpio::ValidLineValue;
     use crate::gpio::mock::MockBackend;
@@ -441,6 +461,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::InitializedSession;
+    use super::SessionConfig;
 
     const SAMPLE_XML: &str = r#"<gpiochip id="gpiochip0" label="mock gpiochip0">
     <line id="0" name="line0" direction="input" bias="pull_up">L</line>
@@ -469,6 +490,18 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn assert_requested_consumer<C: Chip>(chip: &C, offsets: &[u32], consumer: &str) {
+        for offset in offsets {
+            let info = chip.get_line_info(*offset).expect("line info");
+            assert!(info.is_used(), "line {offset} should be requested");
+            assert_eq!(
+                info.get_consumer(),
+                Some(consumer),
+                "line {offset} consumer"
+            );
+        }
     }
 
     fn sample_init_request() -> BTreeMap<String, TargetConfigRequest> {
@@ -522,6 +555,7 @@ mod tests {
             &sample_init_request(),
             &backend,
             &pins,
+            "svc_1",
         )
         .expect("initialize");
 
@@ -532,6 +566,7 @@ mod tests {
 
         let info = session.chips[0].chip.get_info().expect("chip info");
         assert_eq!(info.get_name(), "gpiochip0");
+        assert_requested_consumer(&session.chips[0].chip, &[0, 2, 3, 4], "svc_1");
 
         let request = &session.chips[0].request;
         assert_eq!(request.get_num_requested_lines(), 4);
@@ -585,9 +620,14 @@ mod tests {
             ),
         ]);
 
-        let session =
-            InitializedSession::initialize("init-multi".to_owned(), &init_request, &backend, &pins)
-                .expect("initialize");
+        let session = InitializedSession::initialize(
+            "init-multi".to_owned(),
+            &init_request,
+            &backend,
+            &pins,
+            "svc_1",
+        )
+        .expect("initialize");
 
         assert_eq!(session.chip_count(), 2);
         assert_eq!(session.chips[0].chip_index, 0);
@@ -596,6 +636,8 @@ mod tests {
         assert_eq!(session.chips[1].chip_name, path1);
         assert_eq!(session.chips[0].request.get_num_requested_lines(), 1);
         assert_eq!(session.chips[1].request.get_num_requested_lines(), 1);
+        assert_requested_consumer(&session.chips[0].chip, &[0], "svc_1");
+        assert_requested_consumer(&session.chips[1].chip, &[13], "svc_1");
         assert_eq!(
             session.compiled_targets.target("A").expect("A").pins,
             ResolvedPins::Single(ResolvedPin {
@@ -610,6 +652,60 @@ mod tests {
                 offset: 13,
             })
         );
+    }
+
+    #[test]
+    fn pin_map_session_config_renders_default_consumer_template() {
+        let pins = pin_map("/unused", &[("gpiochip0:0", 0)]);
+        assert_eq!(pins.render_gpio_consumer(1), "svc_1");
+        assert_eq!(pins.render_gpio_consumer(42), "svc_42");
+        assert_eq!(
+            pins.render_gpio_consumer(1),
+            GpioConsumer::default().render(1)
+        );
+    }
+
+    #[test]
+    fn service_config_renders_configured_gpio_consumer() {
+        let config = ServiceConfig::from_toml_str(
+            r#"
+[service]
+socket = "/tmp/gpiojsonsvc.sock"
+gpio-consumer = "app_{id}"
+
+[pins.gpiod]
+"gpiochip0:0" = { device = "/dev/gpiochip0", line = 0 }
+"#,
+        )
+        .expect("config");
+        assert_eq!(config.render_gpio_consumer(7), "app_7");
+    }
+
+    #[test]
+    fn initialize_applies_custom_consumer_to_requested_lines() {
+        let file = write_chip_file(SAMPLE_XML);
+        let path = file.path().to_str().expect("utf8 path");
+        let backend = MockBackend::new();
+        let pins = pin_map(
+            path,
+            &[
+                ("gpiochip0:0", 0),
+                ("gpiochip0:2", 2),
+                ("gpiochip0:3", 3),
+                ("gpiochip0:4", 4),
+            ],
+        );
+
+        let session = InitializedSession::initialize(
+            "init-consumer".to_owned(),
+            &sample_init_request(),
+            &backend,
+            &pins,
+            "myapp",
+        )
+        .expect("initialize");
+
+        assert_requested_consumer(&session.chips[0].chip, &[0, 2, 3, 4], "myapp");
     }
 
     #[test]
@@ -640,6 +736,7 @@ mod tests {
             &init_request,
             &backend,
             &pins,
+            "svc_1",
         )
         .expect("initialize");
 
@@ -678,6 +775,7 @@ mod tests {
             &request,
             &backend,
             &BTreeMap::<String, GPIODPinSpec>::new(),
+            "svc_1",
         )
         .err()
         .expect("unmapped pin");
@@ -699,9 +797,10 @@ mod tests {
             },
         )]);
 
-        let error = InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
-            .err()
-            .expect("unavailable device");
+        let error =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
+                .err()
+                .expect("unavailable device");
         match error {
             SessionError::UnavailableDeviceFile { device } => {
                 assert_eq!(device, "/no/such/gpiochip0.xml");
@@ -724,9 +823,10 @@ mod tests {
             },
         )]);
 
-        let error = InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
-            .err()
-            .expect("missing line");
+        let error =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
+                .err()
+                .expect("missing line");
         match error {
             SessionError::MissingLine { device, line } => {
                 assert_eq!(device, path);
@@ -755,9 +855,10 @@ mod tests {
             },
         )]);
 
-        let error = InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
-            .err()
-            .expect("duplicate location");
+        let error =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
+                .err()
+                .expect("duplicate location");
         assert!(matches!(
             error,
             SessionError::DuplicatePhysicalLocation { pin: "GPIO1_B5" }
@@ -781,7 +882,7 @@ mod tests {
         )]);
 
         let session =
-            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
                 .expect("initialize");
         assert_eq!(
             session.chips[0].request.get_value(2).expect("line 2"),
@@ -810,7 +911,7 @@ mod tests {
         )]);
 
         let session =
-            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
                 .expect("initialize");
         let request = &session.chips[0].request;
         assert_eq!(
@@ -843,7 +944,7 @@ mod tests {
         )]);
 
         let session =
-            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
                 .expect("initialize");
         let request = &session.chips[0].request;
         assert_eq!(
@@ -884,7 +985,7 @@ mod tests {
         ]);
 
         let session =
-            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
                 .expect("initialize");
         assert_eq!(session.final_batch.offsets(0).expect("offsets"), &[2, 3]);
         assert_eq!(
@@ -921,7 +1022,7 @@ mod tests {
         )]);
 
         let session =
-            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
                 .expect("initialize");
         assert_eq!(session.final_batch.offsets(0).expect("offsets"), &[2, 3]);
         assert_eq!(
@@ -960,9 +1061,10 @@ mod tests {
             ),
         ]);
 
-        let error = InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins)
-            .err()
-            .expect("conflicting finals");
+        let error =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
+                .err()
+                .expect("conflicting finals");
         assert!(error.to_string().contains("conflicting set values"));
     }
 }

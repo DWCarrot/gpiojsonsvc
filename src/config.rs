@@ -1,8 +1,10 @@
 //! Service TOML configuration: socket path and exact opaque pin mappings.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str;
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -12,6 +14,12 @@ pub const CONFIG_ENV_VAR: &str = "GPIOJSONSVC_CONFIG";
 
 /// Default config file name when neither a positional path nor `GPIOJSONSVC_CONFIG` is set.
 pub const DEFAULT_CONFIG_PATH: &str = "gpiojsonsvc.toml";
+
+/// Default `service.gpio-consumer` when the TOML key is omitted.
+pub const DEFAULT_GPIO_CONSUMER: &str = "svc_{id}";
+
+/// Maximum length of the configured `service.gpio-consumer` string (not the rendered result).
+pub const GPIO_CONSUMER_MAX_LEN: usize = 12;
 
 /// libgpiod location for one protocol pin string: device path plus line offset.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -23,6 +31,90 @@ pub struct GPIODPinSpec {
 #[derive(Debug, Deserialize)]
 struct RawService {
     socket: String,
+    #[serde(rename = "gpio-consumer", default = "default_gpio_consumer")]
+    gpio_consumer: String,
+}
+
+fn default_gpio_consumer() -> String {
+    DEFAULT_GPIO_CONSUMER.to_owned()
+}
+
+/// Validated `service.gpio-consumer` template or literal name.
+///
+/// Allowed characters are ASCII letters, digits, `-`, and `_`, plus at most one
+/// exact `{id}` placeholder. Length is enforced on this configured string only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpioConsumer {
+    template: Box<[u8]>,
+    arg: Option<Range<usize>>,
+}
+
+impl GpioConsumer {
+    /// Parse and validate a configured consumer string.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ConfigError> {
+        let value = value.as_ref();
+        if value.is_empty() {
+            return Err(ConfigError::EmptyGpioConsumer);
+        }
+        if value.len() > GPIO_CONSUMER_MAX_LEN {
+            return Err(ConfigError::GpioConsumerTooLong {
+                len: value.len(),
+                max: GPIO_CONSUMER_MAX_LEN,
+            });
+        }
+        let bytes = value.as_bytes();
+        let mut i = 0;
+        let mut arg = None;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => {
+                    if bytes.get(i..i + 4) == Some(b"{id}") && arg.is_none() {
+                        arg = Some(i..i + 4);
+                        i += 4;
+                    } else {
+                        return Err(ConfigError::InvalidGpioConsumer {
+                            value: value.to_owned(),
+                        });
+                    }
+                }
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' => i += 1,
+                _ => {
+                    return Err(ConfigError::InvalidGpioConsumer {
+                        value: value.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            template: bytes.to_vec().into_boxed_slice(),
+            arg,
+        })
+    }
+
+    /// The validated configured string, before `{id}` expansion.
+    pub fn as_str(&self) -> &str {
+        unsafe { str::from_utf8_unchecked(&self.template) }
+    }
+
+    /// Replace the `{id}` placeholder with `session_id` in decimal.
+    pub fn render(&self, session_id: u64) -> String {
+        if let Some(range) = &self.arg {
+            let id = session_id.to_string();
+            let mut rendered = Vec::with_capacity(self.template.len() - range.len() + id.len());
+            rendered.extend_from_slice(unsafe { self.template.get_unchecked(..range.start) });
+            rendered.extend_from_slice(id.as_bytes());
+            rendered.extend_from_slice(unsafe { self.template.get_unchecked(range.end..) });
+            unsafe { String::from_utf8_unchecked(rendered) }
+        } else {
+            unsafe { String::from_utf8_unchecked(self.template.to_vec()) }
+        }
+    }
+}
+
+impl Default for GpioConsumer {
+    fn default() -> Self {
+        Self::parse(DEFAULT_GPIO_CONSUMER).expect("default gpio-consumer is valid")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +132,7 @@ struct RawConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
     pub socket: String,
+    pub gpio_consumer: GpioConsumer,
     gpiod_pins: BTreeMap<String, GPIODPinSpec>,
 }
 
@@ -65,6 +158,14 @@ pub enum ConfigError {
     EmptyPinKey,
     #[error("pin `{pin}` has an empty device path")]
     EmptyDevice { pin: String },
+    #[error("service.gpio-consumer must be a non-empty string")]
+    EmptyGpioConsumer,
+    #[error(
+        "service.gpio-consumer `{value}` is invalid: only ASCII letters, digits, '-', '_', and at most one exact `{{id}}` placeholder are allowed"
+    )]
+    InvalidGpioConsumer { value: String },
+    #[error("service.gpio-consumer must be at most {max} characters (got {len})")]
+    GpioConsumerTooLong { len: usize, max: usize },
 }
 
 /// Resolve the config file path: positional CLI path, then `GPIOJSONSVC_CONFIG`, then `gpiojsonsvc.toml`.
@@ -135,6 +236,7 @@ impl ServiceConfig {
 
         Ok(Self {
             socket: raw.service.socket,
+            gpio_consumer: GpioConsumer::parse(raw.service.gpio_consumer)?,
             gpiod_pins: raw.pins.gpiod,
         })
     }
@@ -150,7 +252,10 @@ mod tests {
 
     use super::ConfigError;
     use super::DEFAULT_CONFIG_PATH;
+    use super::DEFAULT_GPIO_CONSUMER;
+    use super::GPIO_CONSUMER_MAX_LEN;
     use super::GPIODPinSpec;
+    use super::GpioConsumer;
     use super::ServiceConfig;
     use super::resolve_config_path;
 
@@ -163,8 +268,25 @@ socket = "/tmp/gpiojsonsvc.sock"
 "GPIO1_B5" = { device = "/path/to/gpiochip1.xml", line = 13 }
 "#;
 
+    fn pins_toml(gpio_consumer: Option<&str>) -> String {
+        let consumer = match gpio_consumer {
+            Some(value) => format!("gpio-consumer = {value:?}\n"),
+            None => String::new(),
+        };
+        format!(
+            r#"
+[service]
+socket = "/tmp/gpiojsonsvc.sock"
+{consumer}
+[pins.gpiod]
+"gpiochip0:7" = {{ device = "/path/to/gpiochip0.xml", line = 7 }}
+"#
+        )
+    }
+
     fn assert_sample(config: &ServiceConfig) {
         assert_eq!(config.socket, "/tmp/gpiojsonsvc.sock");
+        assert_eq!(config.gpio_consumer.as_str(), DEFAULT_GPIO_CONSUMER);
         assert_eq!(
             config.resolve_gpiod_pin("gpiochip0:7"),
             Some(&GPIODPinSpec {
@@ -363,5 +485,103 @@ socket = "/tmp/gpiojsonsvc.sock"
         fs::write(&path, SAMPLE).expect("write config");
         let config = ServiceConfig::load(Some(&path)).expect("load via cli path");
         assert_sample(&config);
+    }
+
+    #[test]
+    fn gpio_consumer_defaults_to_svc_id_template() {
+        let config = ServiceConfig::from_toml_str(&pins_toml(None)).expect("default consumer");
+        assert_eq!(config.gpio_consumer.as_str(), "svc_{id}");
+        assert_eq!(config.gpio_consumer, GpioConsumer::default());
+        assert_eq!(config.gpio_consumer.render(1), "svc_1");
+        assert_eq!(config.gpio_consumer.render(42), "svc_42");
+    }
+
+    #[test]
+    fn gpio_consumer_literal_name_is_unchanged_by_render() {
+        let config =
+            ServiceConfig::from_toml_str(&pins_toml(Some("myapp"))).expect("literal consumer");
+        assert_eq!(config.gpio_consumer.as_str(), "myapp");
+        assert_eq!(config.gpio_consumer.render(7), "myapp");
+    }
+
+    #[test]
+    fn gpio_consumer_expands_the_id_placeholder() {
+        let config =
+            ServiceConfig::from_toml_str(&pins_toml(Some("s{id}"))).expect("short template");
+        assert_eq!(config.gpio_consumer.render(9), "s9");
+
+        let config =
+            ServiceConfig::from_toml_str(&pins_toml(Some("{id}_svc"))).expect("leading id");
+        assert_eq!(config.gpio_consumer.render(3), "3_svc");
+    }
+
+    #[test]
+    fn gpio_consumer_allows_boundary_characters_and_max_configured_length() {
+        let allowed = "_A0-{id}-z9_";
+        assert_eq!(allowed.len(), GPIO_CONSUMER_MAX_LEN);
+        let config =
+            ServiceConfig::from_toml_str(&pins_toml(Some(allowed))).expect("boundary consumer");
+        assert_eq!(config.gpio_consumer.as_str(), allowed);
+        assert_eq!(config.gpio_consumer.render(2), "_A0-2-z9_");
+
+        let at_limit = "abcdefghijkl";
+        assert_eq!(at_limit.len(), GPIO_CONSUMER_MAX_LEN);
+        let config =
+            ServiceConfig::from_toml_str(&pins_toml(Some(at_limit))).expect("max length literal");
+        assert_eq!(config.gpio_consumer.render(99), at_limit);
+    }
+
+    #[test]
+    fn gpio_consumer_does_not_limit_rendered_length() {
+        let consumer = GpioConsumer::parse("svc_{id}").expect("default-shaped template");
+        let rendered = consumer.render(1_234_567_890);
+        assert!(rendered.len() > GPIO_CONSUMER_MAX_LEN);
+        assert_eq!(rendered, "svc_1234567890");
+    }
+
+    #[test]
+    fn rejects_empty_gpio_consumer() {
+        let error = ServiceConfig::from_toml_str(&pins_toml(Some(""))).expect_err("empty consumer");
+        assert!(matches!(error, ConfigError::EmptyGpioConsumer));
+    }
+
+    #[test]
+    fn rejects_invalid_gpio_consumer_values() {
+        for value in [
+            "{ID}",
+            "{id",
+            "{foo}",
+            "{",
+            "}",
+            "svc {id}",
+            "svc.id",
+            "café",
+            "a{id}b{id}",
+            "{id}{id}",
+        ] {
+            let error = ServiceConfig::from_toml_str(&pins_toml(Some(value)))
+                .expect_err(&format!("expected invalid consumer {value:?}"));
+            match error {
+                ConfigError::InvalidGpioConsumer { value: reported } => {
+                    assert_eq!(reported, value);
+                }
+                other => panic!("unexpected error for {value:?}: {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_gpio_consumer_longer_than_max_configured_length() {
+        let too_long = "abcdefghijklm";
+        assert_eq!(too_long.len(), GPIO_CONSUMER_MAX_LEN + 1);
+        let error = ServiceConfig::from_toml_str(&pins_toml(Some(too_long)))
+            .expect_err("overlong consumer");
+        match error {
+            ConfigError::GpioConsumerTooLong { len, max } => {
+                assert_eq!(len, too_long.len());
+                assert_eq!(max, GPIO_CONSUMER_MAX_LEN);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

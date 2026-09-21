@@ -27,6 +27,7 @@ The file holds service settings and a portable `[pins.gpiod]` map. Backend selec
 ```toml
 [service]
 socket = "/tmp/gpiojsonsvc.sock"
+gpio-consumer = "svc_{id}"
 
 [pins.gpiod]
 "gpiochip0:7" = { device = "/path/to/gpiochip0.xml", line = 7 }
@@ -39,6 +40,7 @@ Rules:
 - Keys and `device` strings must be non-empty; `line` must be a `u32`.
 - At least one mapping is required.
 - Several pin strings may share one `device` and different `line` values.
+- `service.gpio-consumer` is the libgpiod request consumer for every chip request owned by a session. When omitted, it defaults to `svc_{id}`. At most one `{id}` placeholder may appear; it is replaced with that session's monotonically increasing reactor `session_id`. Allowed characters are ASCII letters, digits, `-`, and `_`, plus that exact `{id}` placeholder. The value must be non-empty and at most 12 characters; that limit applies only to the configured string, not to the rendered result after `{id}` expansion.
 
 ## Mock chips
 

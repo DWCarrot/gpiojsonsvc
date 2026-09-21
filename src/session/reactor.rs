@@ -305,6 +305,7 @@ where
                     target,
                     self.backend.as_ref(),
                     self.config.as_ref(),
+                    &self.config.render_gpio_consumer(self.session_id),
                 ) {
                     Ok(session) => {
                         self.initialized = Some(session);
