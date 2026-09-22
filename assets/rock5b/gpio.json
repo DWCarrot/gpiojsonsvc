@@ -1,0 +1,662 @@
+{
+    "1": {
+        "function": [
+            {
+                "type": "power",
+                "name": "+3.3V"
+            }
+        ]
+    },
+    "2": {
+        "function": [
+            {
+                "type": "power",
+                "name": "+5.0V"
+            }
+        ]
+    },
+    "3": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO4_B3",
+                "chip": "gpiochip4",
+                "line": 11
+            },
+            {
+                "type": "pwm",
+                "name": "PWM15_IR_M1"
+            },
+            {
+                "type": "uart",
+                "name": "UART8_CTSN_M0"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C7_SDA_M3"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S1_SDO2_M0"
+            }
+        ],
+        "gpio-number": 139
+    },
+    "4": {
+        "function": [
+            {
+                "type": "power",
+                "name": "+5.0V"
+            }
+        ]
+    },
+    "5": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO4_B2",
+                "chip": "gpiochip4",
+                "line": 10
+            },
+            {
+                "type": "pwm",
+                "name": "PWM14_M1"
+            },
+            {
+                "type": "uart",
+                "name": "UART8_RTSN_M0"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C7_SCL_M3"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S1_SDO1_M0"
+            }
+        ],
+        "gpio-number": 138
+    },
+    "6": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "7": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_C3",
+                "chip": "gpiochip3",
+                "line": 19
+            },
+            {
+                "type": "pwm",
+                "name": "PWM15_IR_M0"
+            },
+            {
+                "type": "uart",
+                "name": "UART7_CTSN_M1"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C8_SDA_M4"
+            },
+            {
+                "type": "spi",
+                "name": "SPI1_CS1_M1"
+            }
+        ],
+        "gpio-number": 115
+    },
+    "8": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO0_B5",
+                "chip": "gpiochip0",
+                "line": 13
+            },
+            {
+                "type": "uart",
+                "name": "UART2_TX_M0"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C1_SCL_M0"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S1_MCLK_M1"
+            }
+        ],
+        "gpio-number": 13
+    },
+    "9": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "10": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO0_B6",
+                "chip": "gpiochip0",
+                "line": 14
+            },
+            {
+                "type": "uart",
+                "name": "UART2_RX_M0"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C1_SDA_M0"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S1_SCLK_M1"
+            }
+        ],
+        "gpio-number": 14
+    },
+    "11": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_C1",
+                "chip": "gpiochip3",
+                "line": 17
+            },
+            {
+                "type": "uart",
+                "name": "UART7_RX_M1"
+            },
+            {
+                "type": "spi",
+                "name": "SPI1_CLK_M1"
+            }
+        ],
+        "gpio-number": 113
+    },
+    "12": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_B5",
+                "chip": "gpiochip3",
+                "line": 13
+            },
+            {
+                "type": "pwm",
+                "name": "PWM12_M0"
+            },
+            {
+                "type": "uart",
+                "name": "UART3_TX_M1"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S2_SCLK_M1"
+            }
+        ],
+        "gpio-number": 109
+    },
+    "13": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_B7",
+                "chip": "gpiochip3",
+                "line": 15
+            },
+            {
+                "type": "i2c",
+                "name": "I2C3_SCL_M1"
+            },
+            {
+                "type": "spi",
+                "name": "SPI1_MOSI_M1"
+            }
+        ],
+        "gpio-number": 111
+    },
+    "14": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "15": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_C0",
+                "chip": "gpiochip3",
+                "line": 16
+            },
+            {
+                "type": "uart",
+                "name": "UART7_TX_M1"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C3_SDA_M1"
+            },
+            {
+                "type": "spi",
+                "name": "SPI1_MISO_M1"
+            }
+        ],
+        "gpio-number": 112
+    },
+    "16": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_A4",
+                "chip": "gpiochip3",
+                "line": 4
+            }
+        ],
+        "gpio-number": 100
+    },
+    "17": {
+        "function": [
+            {
+                "type": "power",
+                "name": "+3.3V"
+            }
+        ]
+    },
+    "18": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO4_C4",
+                "chip": "gpiochip4",
+                "line": 20
+            },
+            {
+                "type": "pwm",
+                "name": "PWM5_M2"
+            },
+            {
+                "type": "spi",
+                "name": "SPI3_MISO_M0"
+            }
+        ],
+        "gpio-number": 148
+    },
+    "19": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_B2",
+                "chip": "gpiochip1",
+                "line": 10
+            },
+            {
+                "type": "uart",
+                "name": "UART4_RX_M2"
+            },
+            {
+                "type": "spi",
+                "name": "SPI0_MOSI_M2"
+            }
+        ],
+        "gpio-number": 42
+    },
+    "20": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "21": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_B1",
+                "chip": "gpiochip1",
+                "line": 9
+            },
+            {
+                "type": "spi",
+                "name": "SPI0_MISO_M2"
+            }
+        ],
+        "gpio-number": 41
+    },
+    "22": {
+        "function": [
+            {
+                "type": "unclassified",
+                "name": "SARADC_IN4"
+            }
+        ]
+    },
+    "23": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_B3",
+                "chip": "gpiochip1",
+                "line": 11
+            },
+            {
+                "type": "uart",
+                "name": "UART4_TX_M2"
+            },
+            {
+                "type": "spi",
+                "name": "SPI0_CLK_M2"
+            }
+        ],
+        "gpio-number": 43
+    },
+    "24": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_B4",
+                "chip": "gpiochip1",
+                "line": 12
+            },
+            {
+                "type": "uart",
+                "name": "UART7_RX_M2"
+            },
+            {
+                "type": "spi",
+                "name": "SPI0_CS0_M2"
+            }
+        ],
+        "gpio-number": 44
+    },
+    "25": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "26": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_B5",
+                "chip": "gpiochip1",
+                "line": 13
+            },
+            {
+                "type": "uart",
+                "name": "UART7_TX_M2"
+            },
+            {
+                "type": "spi",
+                "name": "SPI0_CS1_M2"
+            }
+        ],
+        "gpio-number": 45
+    },
+    "27": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO4_C6",
+                "chip": "gpiochip4",
+                "line": 22
+            },
+            {
+                "type": "pwm",
+                "name": "PWM7_IR_M3"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C0_SDA_M1"
+            },
+            {
+                "type": "spi",
+                "name": "SPI3_CLK_M0"
+            }
+        ],
+        "gpio-number": 150
+    },
+    "28": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO4_C5",
+                "chip": "gpiochip4",
+                "line": 21
+            },
+            {
+                "type": "pwm",
+                "name": "PWM6_M2"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C0_SCL_M1"
+            },
+            {
+                "type": "spi",
+                "name": "SPI3_MOSI_M0"
+            }
+        ],
+        "gpio-number": 149
+    },
+    "29": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_D7",
+                "chip": "gpiochip1",
+                "line": 31
+            },
+            {
+                "type": "pwm",
+                "name": "PWM15_IR_M3"
+            },
+            {
+                "type": "uart",
+                "name": "UART1_CTSN_M1"
+            }
+        ],
+        "gpio-number": 63
+    },
+    "30": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "31": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO1_B7",
+                "chip": "gpiochip1",
+                "line": 15
+            },
+            {
+                "type": "pwm",
+                "name": "PWM13_M2"
+            },
+            {
+                "type": "uart",
+                "name": "UART1_RX_M1"
+            },
+            {
+                "type": "unclassified",
+                "name": "SPDIF_TX_M0"
+            }
+        ],
+        "gpio-number": 47
+    },
+    "32": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_C2",
+                "chip": "gpiochip3",
+                "line": 18
+            },
+            {
+                "type": "pwm",
+                "name": "PWM14_M0"
+            },
+            {
+                "type": "uart",
+                "name": "UART7_RTSN_M1"
+            },
+            {
+                "type": "i2c",
+                "name": "I2C8_SCL_M4"
+            },
+            {
+                "type": "spi",
+                "name": "SPI1_CS0_M1"
+            }
+        ],
+        "gpio-number": 114
+    },
+    "33": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_A7",
+                "chip": "gpiochip3",
+                "line": 7
+            },
+            {
+                "type": "pwm",
+                "name": "PWM8_M0"
+            }
+        ],
+        "gpio-number": 103
+    },
+    "34": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "35": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_B6",
+                "chip": "gpiochip3",
+                "line": 14
+            },
+            {
+                "type": "pwm",
+                "name": "PWM13_M0"
+            },
+            {
+                "type": "uart",
+                "name": "UART3_RX_M1"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S2_LRCK_M1"
+            }
+        ],
+        "gpio-number": 110
+    },
+    "36": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_B1",
+                "chip": "gpiochip3",
+                "line": 9
+            },
+            {
+                "type": "pwm",
+                "name": "PWM2_M1"
+            },
+            {
+                "type": "uart",
+                "name": "UART2_TX_M2"
+            }
+        ],
+        "gpio-number": 105
+    },
+    "37": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO0_A0",
+                "chip": "gpiochip0",
+                "line": 0
+            }
+        ]
+    },
+    "38": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_B2",
+                "chip": "gpiochip3",
+                "line": 10
+            },
+            {
+                "type": "pwm",
+                "name": "PWM3_IR_M1"
+            },
+            {
+                "type": "uart",
+                "name": "UART2_RX_M2"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S2_SDI_M1"
+            }
+        ],
+        "gpio-number": 106
+    },
+    "39": {
+        "function": [
+            {
+                "type": "power",
+                "name": "GND"
+            }
+        ]
+    },
+    "40": {
+        "function": [
+            {
+                "type": "gpio",
+                "name": "GPIO3_B3",
+                "chip": "gpiochip3",
+                "line": 11
+            },
+            {
+                "type": "uart",
+                "name": "UART2_RTSN"
+            },
+            {
+                "type": "unclassified",
+                "name": "I2S2_SDO_M1"
+            }
+        ],
+        "gpio-number": 107
+    }
+}

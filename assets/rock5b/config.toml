@@ -1,0 +1,63 @@
+# Rock 5B 40-pin header, generated from assets/rock5b/gpio.json.
+# Keys are the GPIO function names. Power, ground, and non-GPIO pins are omitted.
+# device paths are libgpiod chip devices; point them at mock XML files when using --mock.
+
+[service]
+socket = "/tmp/gpiojsonsvc.sock"
+gpio-consumer = "svc_{id}"
+
+[pins.gpiod]
+# header 3, gpio-number 139
+"GPIO4_B3" = { device = "/dev/gpiochip4", line = 11 }
+# header 5, gpio-number 138
+"GPIO4_B2" = { device = "/dev/gpiochip4", line = 10 }
+# header 7, gpio-number 115
+"GPIO3_C3" = { device = "/dev/gpiochip3", line = 19 }
+# header 8, gpio-number 13
+"GPIO0_B5" = { device = "/dev/gpiochip0", line = 13 }
+# header 10, gpio-number 14
+"GPIO0_B6" = { device = "/dev/gpiochip0", line = 14 }
+# header 11, gpio-number 113
+"GPIO3_C1" = { device = "/dev/gpiochip3", line = 17 }
+# header 12, gpio-number 109
+"GPIO3_B5" = { device = "/dev/gpiochip3", line = 13 }
+# header 13, gpio-number 111
+"GPIO3_B7" = { device = "/dev/gpiochip3", line = 15 }
+# header 15, gpio-number 112
+"GPIO3_C0" = { device = "/dev/gpiochip3", line = 16 }
+# header 16, gpio-number 100
+"GPIO3_A4" = { device = "/dev/gpiochip3", line = 4 }
+# header 18, gpio-number 148
+"GPIO4_C4" = { device = "/dev/gpiochip4", line = 20 }
+# header 19, gpio-number 42
+"GPIO1_B2" = { device = "/dev/gpiochip1", line = 10 }
+# header 21, gpio-number 41
+"GPIO1_B1" = { device = "/dev/gpiochip1", line = 9 }
+# header 23, gpio-number 43
+"GPIO1_B3" = { device = "/dev/gpiochip1", line = 11 }
+# header 24, gpio-number 44
+"GPIO1_B4" = { device = "/dev/gpiochip1", line = 12 }
+# header 26, gpio-number 45
+"GPIO1_B5" = { device = "/dev/gpiochip1", line = 13 }
+# header 27, gpio-number 150
+"GPIO4_C6" = { device = "/dev/gpiochip4", line = 22 }
+# header 28, gpio-number 149
+"GPIO4_C5" = { device = "/dev/gpiochip4", line = 21 }
+# header 29, gpio-number 63
+"GPIO1_D7" = { device = "/dev/gpiochip1", line = 31 }
+# header 31, gpio-number 47
+"GPIO1_B7" = { device = "/dev/gpiochip1", line = 15 }
+# header 32, gpio-number 114
+"GPIO3_C2" = { device = "/dev/gpiochip3", line = 18 }
+# header 33, gpio-number 103
+"GPIO3_A7" = { device = "/dev/gpiochip3", line = 7 }
+# header 35, gpio-number 110
+"GPIO3_B6" = { device = "/dev/gpiochip3", line = 14 }
+# header 36, gpio-number 105
+"GPIO3_B1" = { device = "/dev/gpiochip3", line = 9 }
+# header 37 (no gpio-number in gpio.json)
+"GPIO0_A0" = { device = "/dev/gpiochip0", line = 0 }
+# header 38, gpio-number 106
+"GPIO3_B2" = { device = "/dev/gpiochip3", line = 10 }
+# header 40, gpio-number 107
+"GPIO3_B3" = { device = "/dev/gpiochip3", line = 11 }
