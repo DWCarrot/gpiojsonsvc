@@ -3,7 +3,7 @@
 # device paths are libgpiod chip devices; point them at mock XML files when using --mock.
 
 [service]
-socket = "/tmp/gpiojsonsvc.sock"
+socket = "/run/gpiojsonsvc/service.sock"
 gpio-consumer = "svc_{id}"
 
 [pins.gpiod]

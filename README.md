@@ -66,6 +66,69 @@ GPIOJSONSVC_MOCK_LOG=/tmp/mock-write.log gpiojsonsvc --mock /path/to/gpiojsonsvc
 
 `--mock` is required until the real backend exists. `--mock` enables the file-backed mock. `GPIOJSONSVC_MOCK_LOG` also enables the mock backend write log at that path; it is an error if that variable is set without `--mock`. The process listens until SIGINT, then closes live sessions, removes the socket, and exits. It also removes a stale socket file before bind.
 
+## Group access to the socket
+
+Opening GPIO chip devices needs root, so the service process stays root. Clients do not. A Unix socket is a filesystem object: `connect` needs search (`x`) on every directory in the path and write (`w`) on the socket itself. Put the socket in a setgid directory owned by a dedicated group, and start the process with a umask that leaves the socket group-writable.
+
+`/run` is a tmpfs and is empty after reboot. The steps below create the directory for the current boot. The systemd unit in the next section recreates it on each start.
+
+1. Create a group for the clients. The name `gpio` in the commands below is an example; any group name works if the directory, the socket, and `Group=` in the systemd unit all use that same name. Skip `groupadd` if `getent group gpio` already prints a line:
+
+```bash
+sudo groupadd --system gpio
+```
+
+2. Add the client account to that group. Group membership is read at login, so that user must log in again (or start a new `login` / `sudo -u` session) before it applies:
+
+```bash
+sudo usermod -aG gpio alice
+```
+
+3. Create `/run/gpiojsonsvc` owned by `root:gpio`, mode `0750` (owner `rwx`, group `r-x`):
+
+```bash
+sudo install -d -o root -g gpio -m 0750 /run/gpiojsonsvc
+```
+
+4. Set the setgid bit. A socket created in that directory then inherits group `gpio` instead of the creating process's primary group:
+
+```bash
+sudo chmod g+s /run/gpiojsonsvc
+```
+
+`ls -ld /run/gpiojsonsvc` should show `drwxr-s---`. The `s` in the group execute column is setgid. Mode is now `2750`.
+
+Point the service at that path:
+
+```toml
+[service]
+socket = "/run/gpiojsonsvc/service.sock"
+```
+
+Setgid does not change the socket mode. `bind` creates the inode as `0777` masked by the process umask. Root's usual umask `0022` produces `srwxr-xr-x`, and the group still cannot connect. `sudo` also resets the umask, so set `0117` in the root shell. That yields `srw-rw----` (`0660`):
+
+```bash
+sudo sh -c 'umask 0117; exec gpiojsonsvc /etc/gpiojsonsvc/config.toml'
+```
+
+After start, `ls -l /run/gpiojsonsvc/service.sock` should show `srw-rw---- root gpio`. A user in group `gpio` can then connect; other accounts cannot traverse the directory.
+
+## systemd
+
+`systemd/gpiojsonsvc.service` encodes the same directory and umask. `Group=gpio` sets the process group. `UMask=0117` makes the socket `0660`. `RuntimeDirectory=gpiojsonsvc` and `RuntimeDirectoryMode=2750` create `/run/gpiojsonsvc` as `root:gpio` with setgid before the process binds, and remove that directory when the service stops.
+
+Install the binary and unit, then enable it:
+
+```bash
+sudo install -D -m 755 target/release/gpiojsonsvc /usr/local/bin/gpiojsonsvc
+sudo install -D -m 644 assets/rock5b/config.toml /etc/gpiojsonsvc/config.toml
+sudo install -D -m 644 systemd/gpiojsonsvc.service /etc/systemd/system/gpiojsonsvc.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now gpiojsonsvc.service
+```
+
+The unit's `ExecStart` does not pass `--mock`. Current builds still fail without it until the real backend exists; add `--mock` to `ExecStart` for a mock deployment. The config's `socket` must be `/run/gpiojsonsvc/service.sock`, matching the runtime directory.
+
 ## Protocol (summary)
 
 Each request has a non-empty `id` and an `action`. `init` must succeed once per connection before `get` or `set`. Pin strings in `init` must match `[pins.gpiod]` keys.

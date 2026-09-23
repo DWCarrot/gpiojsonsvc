@@ -1,0 +1,24 @@
+[Unit]
+Description=GPIO JSON Unix-socket service
+After=systemd-tmpfiles-setup.service
+# GPIO chip nodes are created by udev.
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+# Stay root so the process can open /dev/gpiochip*.
+# Primary group gpio matches the socket directory. Combined with the setgid
+# directory below, the bound socket is group gpio.
+Group=gpio
+# bind() creates the socket as 0777 masked by the process umask.
+# 0117 yields 0660 (srw-rw----): owner and group can connect; others cannot.
+UMask=0117
+# /run is tmpfs. Recreate /run/gpiojsonsvc as root:gpio mode 2750 (setgid)
+# before ExecStart, and remove it when the service stops.
+RuntimeDirectory=gpiojsonsvc
+RuntimeDirectoryMode=2750
+ExecStart=/usr/local/bin/gpiojsonsvc /etc/gpiojsonsvc/config.toml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
