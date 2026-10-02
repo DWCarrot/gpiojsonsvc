@@ -24,10 +24,12 @@ use crate::gpio::EdgeEventBuffer;
 use crate::gpio::EdgeEventType;
 use crate::gpio::GPIOError;
 use crate::gpio::LineRequest;
+use crate::protocol::common::ArrayMap;
+use crate::protocol::request::PinConfigRequest;
+use crate::protocol::request::PinSelector;
 use crate::protocol::request::RequestMessage;
 use crate::protocol::request::RequestPayload;
 use crate::protocol::request::SetRequest;
-use crate::protocol::request::TargetConfigRequest;
 use crate::protocol::request::TargetSelector;
 use crate::protocol::response::EventPayload;
 use crate::protocol::response::EventType;
@@ -296,7 +298,7 @@ where
     async fn handle_init(
         &mut self,
         request_id: String,
-        target: &BTreeMap<String, TargetConfigRequest>,
+        target: &ArrayMap<PinSelector, PinConfigRequest>,
     ) -> Result<(), W::Error> {
         match self.state {
             SessionState::Connected => {
@@ -343,15 +345,17 @@ where
                 .await;
         };
 
-        let names = target.as_slice().iter().map(String::as_str);
-        let response =
-            match compile_get_batch(&session.compiled_targets, names, session.chip_count()) {
-                Ok(batch) => match apply_get_batch(session, &batch, GetResultSize::from(target)) {
-                    Ok(payload) => ResponseMessage::pin_value(request_id, payload),
-                    Err(error) => error.into_response(request_id),
-                },
+        let response = match compile_get_batch(
+            &session.compiled_pins,
+            target.as_slice().iter().map(String::as_str),
+            session.chip_count(),
+        ) {
+            Ok(batch) => match apply_get_batch(session, &batch, GetResultSize::from(target)) {
+                Ok(payload) => ResponseMessage::pin_value(request_id, payload),
                 Err(error) => error.into_response(request_id),
-            };
+            },
+            Err(error) => error.into_response(request_id),
+        };
         self.reply(response).await
     }
 
@@ -380,7 +384,7 @@ where
     async fn handle_immediate_set(
         &mut self,
         request_id: String,
-        target: &BTreeMap<String, u8>,
+        target: &ArrayMap<String, u8>,
     ) -> Result<(), W::Error> {
         let Some(session) = self.initialized.as_ref() else {
             return self
@@ -389,14 +393,14 @@ where
         };
 
         let writes = target.iter().map(|(name, value)| (name.as_str(), *value));
-        let response =
-            match compile_set_batch(&session.compiled_targets, writes, session.chip_count()) {
-                Ok(batch) => match apply_set_batch(session, &batch) {
-                    Ok(()) => ResponseMessage::ok(request_id),
-                    Err(error) => error.into_response(request_id),
-                },
+        let response = match compile_set_batch(&session.compiled_pins, writes, session.chip_count())
+        {
+            Ok(batch) => match apply_set_batch(session, &batch) {
+                Ok(()) => ResponseMessage::ok(request_id),
                 Err(error) => error.into_response(request_id),
-            };
+            },
+            Err(error) => error.into_response(request_id),
+        };
         self.reply(response).await
     }
 
@@ -412,7 +416,7 @@ where
         };
 
         let compiled_steps = match PendingSetSequence::compile_steps(
-            &session.compiled_targets,
+            &session.compiled_pins,
             steps,
             session.chip_count(),
         ) {
@@ -519,9 +523,8 @@ where
                             }
                         };
                         let offset = event.get_line_offset();
-                        let Some(target) = session
-                            .compiled_targets
-                            .trigger_target_name(chip_index, offset)
+                        let Some(target) =
+                            session.compiled_pins.trigger_pin_name(chip_index, offset)
                         else {
                             tracing::debug!(
                                 session_id = self.session_id,
@@ -571,7 +574,7 @@ where
         };
 
         let trigger_chips: BTreeSet<u32> = session
-            .compiled_targets
+            .compiled_pins
             .trigger_by_pin
             .keys()
             .map(|(chip_index, _)| *chip_index)
@@ -734,13 +737,14 @@ mod tests {
     use crate::gpio::mock::MockBackend;
     use crate::gpio::mock::parse_chip_xml;
     use crate::gpio::mock::parse_write_log_blocks;
+    use crate::protocol::common::ArrayMap;
     use crate::protocol::request::EdgeMode;
+    use crate::protocol::request::PinConfigRequest;
     use crate::protocol::request::PinSelector;
     use crate::protocol::request::RequestMessage;
     use crate::protocol::request::RequestPayload;
     use crate::protocol::request::SetRequest;
     use crate::protocol::request::SetStepRequest;
-    use crate::protocol::request::TargetConfigRequest;
     use crate::protocol::request::TargetSelector;
     use crate::protocol::response::EventType;
     use crate::protocol::response::PinValuePayload;
@@ -827,19 +831,22 @@ mod tests {
         file
     }
 
-    fn sample_init_targets() -> BTreeMap<String, TargetConfigRequest> {
-        BTreeMap::from([
+    fn pin_map<V, const N: usize>(entries: [(String, V); N]) -> ArrayMap<PinSelector, V> {
+        entries
+            .into_iter()
+            .map(|(name, value)| (PinSelector::parse(name).unwrap(), value))
+            .collect()
+    }
+
+    fn sample_init_targets() -> ArrayMap<PinSelector, PinConfigRequest> {
+        pin_map([
             (
-                "IN".to_owned(),
-                TargetConfigRequest::Input {
-                    pin: PinSelector::Single("gpiochip0:0".to_owned()),
-                    bias: None,
-                },
+                "gpiochip0:0".to_owned(),
+                PinConfigRequest::Input { bias: None },
             ),
             (
-                "OUT".to_owned(),
-                TargetConfigRequest::Output {
-                    pin: PinSelector::Single("gpiochip0:2".to_owned()),
+                "gpiochip0:2".to_owned(),
+                PinConfigRequest::Output {
                     drive: None,
                     initial_value: None,
                     final_value: None,
@@ -848,19 +855,17 @@ mod tests {
         ])
     }
 
-    fn trigger_init_targets() -> BTreeMap<String, TargetConfigRequest> {
-        BTreeMap::from([
+    fn trigger_init_targets() -> ArrayMap<PinSelector, PinConfigRequest> {
+        pin_map([
             (
-                "TRIG".to_owned(),
-                TargetConfigRequest::Trigger {
-                    pin: "gpiochip0:0".to_owned(),
+                "gpiochip0:0|gpiochip0:1".to_owned(),
+                PinConfigRequest::Trigger {
                     edge: EdgeMode::Both,
                 },
             ),
             (
-                "OUT".to_owned(),
-                TargetConfigRequest::Output {
-                    pin: PinSelector::Single("gpiochip0:2".to_owned()),
+                "gpiochip0:2".to_owned(),
+                PinConfigRequest::Output {
                     drive: None,
                     initial_value: None,
                     final_value: None,
@@ -894,6 +899,13 @@ mod tests {
                 crate::config::GPIODPinSpec {
                     device: path.clone(),
                     line: 0,
+                },
+            ),
+            (
+                "gpiochip0:1".to_owned(),
+                crate::config::GPIODPinSpec {
+                    device: path.clone(),
+                    line: 1,
                 },
             ),
             (
@@ -947,13 +959,8 @@ mod tests {
         snapshot.lines.get(&offset).expect("line").persisted_level
     }
 
-    fn output_target(
-        pin: PinSelector,
-        initial_value: Option<u8>,
-        final_value: Option<u8>,
-    ) -> TargetConfigRequest {
-        TargetConfigRequest::Output {
-            pin,
+    fn output_target(initial_value: Option<u8>, final_value: Option<u8>) -> PinConfigRequest {
+        PinConfigRequest::Output {
             drive: None,
             initial_value,
             final_value,
@@ -963,7 +970,7 @@ mod tests {
     async fn init_ok(
         handle: &SessionHandle,
         responses: &mut tokio::sync::mpsc::UnboundedReceiver<ResponseMessage>,
-        target: BTreeMap<String, TargetConfigRequest>,
+        target: ArrayMap<PinSelector, PinConfigRequest>,
     ) {
         send_request(
             handle,
@@ -1000,7 +1007,7 @@ mod tests {
             RequestMessage {
                 id: "get-1".to_owned(),
                 payload: RequestPayload::Get {
-                    target: TargetSelector::Single("IN".to_owned()),
+                    target: TargetSelector::Single("gpiochip0:0".to_owned()),
                 },
             },
         )
@@ -1062,7 +1069,7 @@ mod tests {
             RequestMessage {
                 id: "get-1".to_owned(),
                 payload: RequestPayload::Get {
-                    target: TargetSelector::Single("IN".to_owned()),
+                    target: TargetSelector::Single("gpiochip0:0".to_owned()),
                 },
             },
         )
@@ -1078,7 +1085,7 @@ mod tests {
             RequestMessage {
                 id: "set-1".to_owned(),
                 payload: RequestPayload::Set {
-                    target: SetRequest::Immediate(BTreeMap::from([("OUT".to_owned(), 1)])),
+                    target: SetRequest::Immediate(ArrayMap::from([("gpiochip0:2".to_owned(), 1)])),
                 },
             },
         )
@@ -1149,7 +1156,7 @@ mod tests {
             RequestMessage {
                 id: "get-1".to_owned(),
                 payload: RequestPayload::Get {
-                    target: TargetSelector::Single("IN".to_owned()),
+                    target: TargetSelector::Single("gpiochip0:0".to_owned()),
                 },
             },
         )
@@ -1200,15 +1207,15 @@ mod tests {
                     target: SetRequest::Steps(vec![
                         SetStepRequest {
                             lag: 0,
-                            target: BTreeMap::from([("OUT".to_owned(), 1)]),
+                            target: ArrayMap::from([("gpiochip0:2".to_owned(), 1)]),
                         },
                         SetStepRequest {
                             lag: 30,
-                            target: BTreeMap::from([("OUT".to_owned(), 0)]),
+                            target: ArrayMap::from([("gpiochip0:2".to_owned(), 0)]),
                         },
                         SetStepRequest {
                             lag: 30,
-                            target: BTreeMap::from([("OUT".to_owned(), 1)]),
+                            target: ArrayMap::from([("gpiochip0:2".to_owned(), 1)]),
                         },
                     ]),
                 },
@@ -1276,11 +1283,11 @@ mod tests {
                     target: SetRequest::Steps(vec![
                         SetStepRequest {
                             lag: 0,
-                            target: BTreeMap::from([("OUT".to_owned(), 1)]),
+                            target: ArrayMap::from([("gpiochip0:2".to_owned(), 1)]),
                         },
                         SetStepRequest {
                             lag: 200,
-                            target: BTreeMap::from([("OUT".to_owned(), 0)]),
+                            target: ArrayMap::from([("gpiochip0:2".to_owned(), 0)]),
                         },
                     ]),
                 },
@@ -1293,7 +1300,7 @@ mod tests {
             RequestMessage {
                 id: "set-2".to_owned(),
                 payload: RequestPayload::Set {
-                    target: SetRequest::Immediate(BTreeMap::from([("OUT".to_owned(), 0)])),
+                    target: SetRequest::Immediate(ArrayMap::from([("gpiochip0:2".to_owned(), 0)])),
                 },
             },
         )
@@ -1357,7 +1364,7 @@ mod tests {
         .await
         .expect("timed out waiting for trigger event");
 
-        assert_eq!(event.target, "TRIG");
+        assert_eq!(event.target, "gpiochip0:0");
         assert_eq!(event.kind, EventType::Rising);
 
         handle
@@ -1369,17 +1376,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_applies_packed_single_initial_value() {
+    async fn init_applies_single_initial_value() {
         let chip_file = write_chip_file(SAMPLE_XML);
         let (handle, mut responses, join) = spawn_reactor(&chip_file);
 
         init_ok(
             &handle,
             &mut responses,
-            BTreeMap::from([(
-                "OUT".to_owned(),
-                output_target(PinSelector::Single("gpiochip0:2".to_owned()), Some(1), None),
-            )]),
+            pin_map([("gpiochip0:2".to_owned(), output_target(Some(1), None))]),
         )
         .await;
 
@@ -1395,29 +1399,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_applies_packed_combined_initial_value() {
+    async fn init_applies_broadcast_combined_initial_value() {
         let chip_file = write_chip_file(SAMPLE_XML);
         let (handle, mut responses, join) = spawn_reactor(&chip_file);
 
         init_ok(
             &handle,
             &mut responses,
-            BTreeMap::from([(
-                "OUT2".to_owned(),
-                output_target(
-                    PinSelector::Combined(smallvec::smallvec![
-                        "gpiochip0:2".to_owned(),
-                        "gpiochip0:3".to_owned(),
-                    ]),
-                    Some(0b10),
-                    None,
-                ),
+            pin_map([(
+                "gpiochip0:2|gpiochip0:3".to_owned(),
+                output_target(Some(1), None),
             )]),
         )
         .await;
 
         assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
-        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
 
         handle
             .sender()
@@ -1435,16 +1432,9 @@ mod tests {
         init_ok(
             &handle,
             &mut responses,
-            BTreeMap::from([(
-                "OUT2".to_owned(),
-                output_target(
-                    PinSelector::Combined(smallvec::smallvec![
-                        "gpiochip0:2".to_owned(),
-                        "gpiochip0:3".to_owned(),
-                    ]),
-                    None,
-                    None,
-                ),
+            pin_map([(
+                "gpiochip0:2|gpiochip0:3".to_owned(),
+                output_target(None, None),
             )]),
         )
         .await;
@@ -1461,29 +1451,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disconnect_applies_packed_final_output_values() {
+    async fn disconnect_applies_broadcast_final_output_values() {
         let chip_file = write_chip_file(SAMPLE_XML);
         let (handle, mut responses, join) = spawn_reactor(&chip_file);
 
         init_ok(
             &handle,
             &mut responses,
-            BTreeMap::from([(
-                "OUT2".to_owned(),
-                output_target(
-                    PinSelector::Combined(smallvec::smallvec![
-                        "gpiochip0:2".to_owned(),
-                        "gpiochip0:3".to_owned(),
-                    ]),
-                    Some(0b01),
-                    Some(0b10),
-                ),
+            pin_map([(
+                "gpiochip0:2|gpiochip0:3".to_owned(),
+                output_target(Some(0), Some(1)),
             )]),
         )
         .await;
 
         assert_eq!(persisted_line(&chip_file, 2), LineLevel::Low);
-        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
 
         handle
             .sender()
@@ -1493,7 +1476,7 @@ mod tests {
         join.await.expect("reactor exit");
 
         assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
-        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
     }
 
     #[tokio::test]
@@ -1604,21 +1587,14 @@ mod tests {
         init_ok(
             &handle,
             &mut responses_rx,
-            BTreeMap::from([(
-                "OUT2".to_owned(),
-                output_target(
-                    PinSelector::Combined(smallvec::smallvec![
-                        "gpiochip0:2".to_owned(),
-                        "gpiochip0:3".to_owned(),
-                    ]),
-                    Some(0b01),
-                    Some(0b10),
-                ),
+            pin_map([(
+                "gpiochip0:2|gpiochip0:3".to_owned(),
+                output_target(Some(0), Some(1)),
             )]),
         )
         .await;
         assert_eq!(persisted_line(&chip_file, 2), LineLevel::Low);
-        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
 
         events.emit(crate::system_event::SystemEvent::SHUTDOWN);
         tokio::time::timeout(Duration::from_secs(2), join)
@@ -1627,7 +1603,7 @@ mod tests {
             .expect("reactor join");
 
         assert_eq!(persisted_line(&chip_file, 2), LineLevel::High);
-        assert_eq!(persisted_line(&chip_file, 3), LineLevel::Low);
+        assert_eq!(persisted_line(&chip_file, 3), LineLevel::High);
     }
 
     #[tokio::test]

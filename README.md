@@ -1,6 +1,6 @@
 # gpiojsonsvc
 
-`gpiojsonsvc` is a Rust service that exposes GPIO over a Unix domain socket using newline-delimited JSON. Protocol pin strings are opaque: the service never infers a chip or line from spelling. Every `pin` value must appear as an exact key in the TOML pin map.
+`gpiojsonsvc` is a Rust service that exposes GPIO over a Unix domain socket using newline-delimited JSON. Protocol pin strings are opaque: the service never infers a chip or line from spelling. Each component of a `|`-separated pin expression must appear as an exact key in the TOML pin map.
 
 ## Current status
 
@@ -10,7 +10,7 @@ The runnable path is the mock backend plus a Unix-socket listener:
 - Select the mock backend with `--mock` (optionally `GPIOJSONSVC_MOCK_LOG` to append chip XML dumps after writes)
 - Accept clients on `service.socket`
 - Handle `init`, `get`, and `set` (immediate and stepped) per connection
-- Emit trigger `event` messages for configured edge targets
+- Emit trigger `event` messages for configured trigger pins
 
 Without `--mock`, startup fails with `real backend unavailable; use --mock`. `src/gpio/sys.rs` is a stub; Rock5B `libgpiod` FFI is not implemented.
 
@@ -38,6 +38,7 @@ Rules:
 
 - Pin keys are matched exactly (no case folding, trimming, or `chip:line` parsing).
 - Keys and `device` strings must be non-empty; `line` must be a `u32`.
+- Pin keys cannot contain `|` or equal `lag`; these are reserved by the protocol.
 - At least one mapping is required.
 - Several pin strings may share one `device` and different `line` values.
 - `service.gpio-consumer` is the libgpiod request consumer for every chip request owned by a session. When omitted, it defaults to `svc_{id}`. At most one `{id}` placeholder may appear; it is replaced with that session's monotonically increasing reactor `session_id`. Allowed characters are ASCII letters, digits, `-`, and `_`, plus that exact `{id}` placeholder. The value must be non-empty and at most 12 characters; that limit applies only to the configured string, not to the rendered result after `{id}` expansion.
@@ -131,15 +132,19 @@ The unit's `ExecStart` does not pass `--mock`. Current builds still fail without
 
 ## Protocol (summary)
 
-Each request has a non-empty `id` and an `action`. `init` must succeed once per connection before `get` or `set`. Pin strings in `init` must match `[pins.gpiod]` keys.
+Each request has a non-empty `id` and an `action`. `init` must succeed once per connection before `get` or `set`. The `target` field uses exact configuration pin names directly; custom target bindings and the nested `pin` field have been removed.
 
 ```json
-{"id":"1","action":"init","target":{"LED":{"mode":"output","pin":"GPIO1_B5","initial":1,"final":0}}}
-{"id":"2","action":"get","target":"IN"}
-{"id":"3","action":"set","target":{"LED":1}}
+{"id":"1","action":"init","target":{"GPIO1_B5|GPIO1_B6":{"mode":"output","initial":1,"final":0},"GPIO1_A0":{"mode":"input"}}}
+{"id":"2","action":"get","target":"GPIO1_A0"}
+{"id":"3","action":"set","target":{"GPIO1_B6":1,"GPIO1_B5":0}}
 ```
 
-Combined `input`/`output` targets take up to eight unduplicated pins packed into a `u8` (first pin is the high bit). Output targets may also set optional packed `initial` and `final` `u8` fields; omit `initial` to leave the line unchanged at request time, and omit `final` to skip a close write. Configured `final` values are applied on graceful session close (disconnect, session shutdown, and service shutdown). Trigger targets take a single pin. Stepped `set` is an array of objects; step 0 must not include `lag`, later steps must. The `ok` reply is sent after the last step is applied. Trigger events reuse the `init` request `id`.
+In `init`, `A|B` applies the same parameters to each pin. Output `initial` and `final` are optional single-bit values (0 or 1), broadcast to every pin in that entry. Omit `initial` to preserve the existing value when requesting the line; omit `final` to skip a close write. Init groups can also configure multiple triggers, each emitting events under its own pin name.
+
+In `get` and `set`, use individual pin names and values of 0 or 1. Get accepts one name or an array of names; set accepts separate name/value entries. `|` is supported only in init. Reads allow input/trigger pins; writes require outputs. Each physical pin may appear only once in init. Stepped `set` uses an array of objects: step 0 omits `lag` (or uses 0), and later steps require positive millisecond delays. The `ok` reply follows the last applied step. Trigger events reuse the init request ID; final values are applied on graceful session close.
+
+This is a breaking protocol change; see the migration notes in the protocol reference.
 
 Full request and response shapes: [docs/protocol.md](docs/protocol.md). Layers and session flow: [docs/architecture.md](docs/architecture.md).
 
@@ -152,8 +157,8 @@ With no subcommand (or `repl`), the client opens one socket and walks `init` / `
 ```bash
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock script /path/to/session.jsonl
-python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock init --name LED --mode output --pin GPIO1_B5
-python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock raw '{"id":"1","action":"get","target":"LED"}'
+python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock init --mode output --pin GPIO1_B5
+python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock raw '{"id":"1","action":"get","target":"GPIO1_A0"}'
 ```
 
 `init`/`get`/`set`/`raw` each open a new connection and send one request. Use the wizard or `script` for `init` followed by `get`/`set` on the same session. The wizard and canned commands allocate increasing string IDs unless `--id` is set on a one-shot command. `raw` and `script` send JSON as written.

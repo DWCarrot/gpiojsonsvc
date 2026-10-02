@@ -22,18 +22,12 @@ pub enum SessionError<'a> {
     Closed,
     #[error("a set request is already in progress")]
     SetInProgress,
-    #[error("unknown target `{target}`")]
+    #[error("pin `{target}` is not initialized")]
     UnknownTarget { target: &'a str },
-    #[error("target `{target}` is not readable")]
+    #[error("pin `{target}` is not readable")]
     TargetNotReadable { target: &'a str },
-    #[error("target `{target}` is not writable")]
+    #[error("pin `{target}` is not writable")]
     TargetNotWritable { target: &'a str },
-    #[error("target `{target}` value {value} exceeds {bits} configured bits")]
-    TargetValueOutOfRange {
-        target: &'a str,
-        value: u8,
-        bits: usize,
-    },
     #[error("unmapped pin `{pin}`")]
     UnmappedPin { pin: &'a str },
     #[error("device file `{device}` is unavailable")]
@@ -42,7 +36,7 @@ pub enum SessionError<'a> {
     MissingLine { device: String, line: u32 },
     #[error("pin `{pin}` maps to a duplicate physical location")]
     DuplicatePhysicalLocation { pin: &'a str },
-    #[error("no trigger target is configured for chip {chip_index} offset {offset}")]
+    #[error("no trigger pin is configured for chip {chip_index} offset {offset}")]
     UnmappedTriggerPin { chip_index: u32, offset: u32 },
     #[error(transparent)]
     GPIO(GPIOError),

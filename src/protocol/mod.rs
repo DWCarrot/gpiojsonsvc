@@ -6,7 +6,6 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use self::request::RequestPayload;
-use self::request::TargetConfigRequest;
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -53,49 +52,46 @@ pub fn parse_request_line(line: &str) -> Result<request::RequestMessage, Protoco
     }
 }
 
-/// Packed `u8` values use the same width rule as `set`: a target of width `n`
-/// (`n < 8`) rejects values `>= 2^n`. Width 8 accepts the full `u8` range.
-pub(crate) fn packed_u8_exceeds_width(width: usize, value: u8) -> bool {
-    width < 8 && (value as usize) >= (1usize << width)
-}
-
 fn validate_request(request: &request::RequestMessage) -> Result<(), ProtocolError> {
-    let RequestPayload::Init { target } = &request.payload else {
-        return Ok(());
+    let validate_write = |name: &str, value: u8| {
+        request::validate_pin_name(name).map_err(ProtocolError::Validation)?;
+        if value > 1 {
+            return Err(ProtocolError::Validation(format!(
+                "pin `{name}` value must be 0 or 1"
+            )));
+        }
+        Ok(())
     };
-
-    for (name, config) in target {
-        let TargetConfigRequest::Output {
-            pin,
-            initial_value: initial,
-            final_value,
-            ..
-        } = config
-        else {
-            continue;
-        };
-        let width = pin.len();
-        if let Some(value) = *initial {
-            validate_packed_output_value(name, "initial", width, value)?;
+    match &request.payload {
+        RequestPayload::Init { target } => {
+            if target.is_empty() {
+                return Err(ProtocolError::Validation(
+                    "init target must not be empty".to_owned(),
+                ));
+            }
+            for (_, config) in target {
+                config.validate().map_err(ProtocolError::Validation)?;
+            }
         }
-        if let Some(value) = *final_value {
-            validate_packed_output_value(name, "final", width, value)?;
+        RequestPayload::Get { target } => {
+            for selector in target.as_slice() {
+                request::validate_pin_name(selector).map_err(ProtocolError::Validation)?;
+            }
         }
-    }
-
-    Ok(())
-}
-
-fn validate_packed_output_value(
-    target: &str,
-    field: &str,
-    width: usize,
-    value: u8,
-) -> Result<(), ProtocolError> {
-    if packed_u8_exceeds_width(width, value) {
-        return Err(ProtocolError::Validation(format!(
-            "output target `{target}` {field} value {value} exceeds {width} configured bits"
-        )));
+        RequestPayload::Set { target } => match target {
+            request::SetRequest::Immediate(writes) => {
+                for (name, value) in writes {
+                    validate_write(name, *value)?;
+                }
+            }
+            request::SetRequest::Steps(steps) => {
+                for step in steps {
+                    for (name, value) in &step.target {
+                        validate_write(name, *value)?;
+                    }
+                }
+            }
+        },
     }
     Ok(())
 }
@@ -107,7 +103,6 @@ pub fn serialize_response(response: &response::ResponseMessage) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::parse_request_line;
-    use super::request::PinSelector;
     use super::request::RequestPayload;
     use super::response::EventPayload;
     use super::response::EventType;
@@ -121,61 +116,6 @@ mod tests {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect()
-    }
-
-    #[test]
-    fn parses_init_request_from_idea_example() {
-        use crate::protocol::request::TargetConfigRequest;
-
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "GPIO4_B3": {
-                  "mode": "input",
-                  "pin": "gpiochip0:2",
-                  "bias": "as_is"
-                },
-                "CombinedIN2": {
-                  "mode": "input",
-                  "pin": ["gpiochip0:3", "gpiochip1:4", "gpiochip1:5"],
-                  "bias": "pull_up"
-                },
-                "GPIO4_B5": {
-                  "mode": "output",
-                  "pin": "gpiochip2:1",
-                  "drive": "push_pull"
-                },
-                "GPIO1_A2": {
-                  "mode": "trigger",
-                  "pin": "gpiochip1:1",
-                  "edge": "rising"
-                }
-              }
-            }
-        "#,
-        );
-
-        let request = parse_request_line(&line).expect("init request should parse");
-
-        match request.payload {
-            RequestPayload::Init { target } => {
-                assert_eq!(request.id, "init-1");
-                assert_eq!(target.len(), 4);
-                for (name, config) in target.iter() {
-                    let n = name.as_str();
-                    let (c, u) = match &config {
-                        TargetConfigRequest::Input { pin, bias } => ("input", pin.len()),
-                        TargetConfigRequest::Output { pin, .. } => ("output", pin.len()),
-                        TargetConfigRequest::Trigger { pin, edge } => ("trigger", 1),
-                    };
-                    println!("name: {n}, config: {c}, unit: {u}");
-                }
-            }
-            other => panic!("expected init request, got {other:?}"),
-        }
     }
 
     #[test]
@@ -194,7 +134,7 @@ mod tests {
 
         match request.payload {
             RequestPayload::Get { target } => {
-                let targets: Vec<_> = target.as_slice().iter().collect();
+                let targets: Vec<_> = target.as_slice().iter().map(ToString::to_string).collect();
                 assert_eq!(targets, vec!["GPIO4_B3", "CombinedIN2"]);
             }
             other => panic!("expected get request, got {other:?}"),
@@ -224,69 +164,14 @@ mod tests {
                 super::request::SetRequest::Steps(target) => {
                     assert_eq!(target.len(), 3);
                     assert_eq!(target[0].lag, 0);
-                    assert_eq!(target[0].target.get("GPIO4_B5"), Some(&1));
+                    assert_eq!(target[0].target.iter().next().unwrap().1, &1);
                     assert_eq!(target[1].lag, 100);
-                    assert_eq!(target[1].target.get("GPIO4_B5"), Some(&0));
+                    assert_eq!(target[1].target.iter().next().unwrap().1, &0);
                 }
                 other => panic!("expected steps request, got {other:?}"),
             },
             other => panic!("expected set request, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn rejects_trigger_target_with_multiple_pins() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "GPIO1_A2": {
-                  "mode": "trigger",
-                  "pin": ["gpiochip1:1", "gpiochip1:2"],
-                  "edge": "rising"
-                }
-              }
-            }
-        "#,
-        );
-
-        let error = parse_request_line(&line).expect_err("trigger target should fail validation");
-
-        assert!(error.to_string().contains("expected a string"));
-    }
-
-    #[test]
-    fn rejects_input_target_with_too_many_pins() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "CombinedIN": {
-                  "mode": "input",
-                  "pin": [
-                    "gpiochip0:0",
-                    "gpiochip0:1",
-                    "gpiochip0:2",
-                    "gpiochip0:3",
-                    "gpiochip0:4",
-                    "gpiochip0:5",
-                    "gpiochip0:6",
-                    "gpiochip0:7",
-                    "gpiochip0:8"
-                  ]
-                }
-              }
-            }
-        "#,
-        );
-
-        let error = parse_request_line(&line).expect_err("input target should fail validation");
-
-        assert!(error.to_string().contains("more than 8 pins"));
     }
 
     #[test]
@@ -318,7 +203,7 @@ mod tests {
               "action": "set",
               "target": {
                 "GPIO4_B5": 1,
-                "GPIO4_B6": 2
+                "GPIO4_B6": 0
               }
             }
         "#,
@@ -329,8 +214,13 @@ mod tests {
         match request.payload {
             RequestPayload::Set { target } => match target {
                 super::request::SetRequest::Immediate(target) => {
-                    assert_eq!(target.get("GPIO4_B5"), Some(&1));
-                    assert_eq!(target.get("GPIO4_B6"), Some(&2));
+                    assert_eq!(
+                        target
+                            .iter()
+                            .map(|(pin, value)| (pin.to_string(), *value))
+                            .collect::<Vec<_>>(),
+                        [("GPIO4_B5".to_owned(), 1), ("GPIO4_B6".to_owned(), 0)]
+                    );
                 }
                 other => panic!("expected immediate request, got {other:?}"),
             },
@@ -381,254 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_combined_pin_selector_as_smallvec_backed_variant() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "CombinedIN": {
-                  "mode": "input",
-                  "pin": ["gpiochip0:3", "gpiochip1:4"]
-                }
-              }
-            }
-        "#,
-        );
-
-        let request = parse_request_line(&line).expect("init request should parse");
-
-        match request.payload {
-            RequestPayload::Init { target } => match target.get("CombinedIN") {
-                Some(super::request::TargetConfigRequest::Input { pin, .. }) => match pin {
-                    PinSelector::Combined(pins) => {
-                        assert_eq!(pins.len(), 2);
-                        assert_eq!(pins[0], "gpiochip0:3");
-                        assert_eq!(pins[1], "gpiochip1:4");
-                    }
-                    other => panic!("expected combined pin selector, got {other:?}"),
-                },
-                other => panic!("expected input target, got {other:?}"),
-            },
-            other => panic!("expected init request, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_output_target_omitting_initial_and_final() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "GPIO4_B5": {
-                  "mode": "output",
-                  "pin": "gpiochip2:1",
-                  "drive": "push_pull"
-                }
-              }
-            }
-        "#,
-        );
-
-        let request = parse_request_line(&line).expect("init request should parse");
-
-        match request.payload {
-            RequestPayload::Init { target } => match target.get("GPIO4_B5") {
-                Some(super::request::TargetConfigRequest::Output {
-                    pin,
-                    drive,
-                    initial_value: initial,
-                    final_value,
-                }) => {
-                    assert!(matches!(pin, PinSelector::Single(name) if name == "gpiochip2:1"));
-                    assert_eq!(*drive, Some(super::request::DriveMode::PushPull));
-                    assert_eq!(*initial, None);
-                    assert_eq!(*final_value, None);
-                }
-                other => panic!("expected output target, got {other:?}"),
-            },
-            other => panic!("expected init request, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_output_target_with_packed_initial_and_final() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "GPIO4_B5": {
-                  "mode": "output",
-                  "pin": "gpiochip2:1",
-                  "initial": 1,
-                  "final": 0
-                }
-              }
-            }
-        "#,
-        );
-
-        let request = parse_request_line(&line).expect("init request should parse");
-
-        match request.payload {
-            RequestPayload::Init { target } => match target.get("GPIO4_B5") {
-                Some(super::request::TargetConfigRequest::Output {
-                    initial_value: initial,
-                    final_value,
-                    ..
-                }) => {
-                    assert_eq!(*initial, Some(1));
-                    assert_eq!(*final_value, Some(0));
-                }
-                other => panic!("expected output target, got {other:?}"),
-            },
-            other => panic!("expected init request, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_combined_output_target_with_packed_values() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "CombinedOUT": {
-                  "mode": "output",
-                  "pin": ["gpiochip0:3", "gpiochip1:4", "gpiochip1:5"],
-                  "initial": 5,
-                  "final": 2
-                }
-              }
-            }
-        "#,
-        );
-
-        let request = parse_request_line(&line).expect("init request should parse");
-
-        match request.payload {
-            RequestPayload::Init { target } => match target.get("CombinedOUT") {
-                Some(super::request::TargetConfigRequest::Output {
-                    pin,
-                    initial_value: initial,
-                    final_value,
-                    ..
-                }) => {
-                    assert_eq!(pin.len(), 3);
-                    assert_eq!(*initial, Some(0b101));
-                    assert_eq!(*final_value, Some(0b010));
-                }
-                other => panic!("expected combined output target, got {other:?}"),
-            },
-            other => panic!("expected init request, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rejects_output_initial_out_of_range_for_target_width() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "GPIO4_B5": {
-                  "mode": "output",
-                  "pin": "gpiochip2:1",
-                  "initial": 2
-                }
-              }
-            }
-        "#,
-        );
-
-        let error = parse_request_line(&line).expect_err("single-bit initial 2 is out of range");
-        assert!(
-            error
-                .to_string()
-                .contains("output target `GPIO4_B5` initial value 2 exceeds 1 configured bits")
-        );
-    }
-
-    #[test]
-    fn rejects_output_final_out_of_range_for_combined_width() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "CombinedOUT": {
-                  "mode": "output",
-                  "pin": ["gpiochip0:3", "gpiochip1:4", "gpiochip1:5"],
-                  "final": 8
-                }
-              }
-            }
-        "#,
-        );
-
-        let error = parse_request_line(&line).expect_err("3-bit final 8 is out of range");
-        assert!(
-            error
-                .to_string()
-                .contains("output target `CombinedOUT` final value 8 exceeds 3 configured bits")
-        );
-    }
-
-    #[test]
-    fn accepts_full_u8_range_for_eight_pin_output() {
-        let line = json_line(
-            r#"
-            {
-              "id": "init-1",
-              "action": "init",
-              "target": {
-                "WideOUT": {
-                  "mode": "output",
-                  "pin": [
-                    "gpiochip0:0",
-                    "gpiochip0:1",
-                    "gpiochip0:2",
-                    "gpiochip0:3",
-                    "gpiochip0:4",
-                    "gpiochip0:5",
-                    "gpiochip0:6",
-                    "gpiochip0:7"
-                  ],
-                  "initial": 255,
-                  "final": 128
-                }
-              }
-            }
-        "#,
-        );
-
-        let request = parse_request_line(&line).expect("8-bit values should parse");
-
-        match request.payload {
-            RequestPayload::Init { target } => match target.get("WideOUT") {
-                Some(super::request::TargetConfigRequest::Output {
-                    initial_value: initial,
-                    final_value,
-                    ..
-                }) => {
-                    assert_eq!(*initial, Some(255));
-                    assert_eq!(*final_value, Some(128));
-                }
-                other => panic!("expected 8-pin output target, got {other:?}"),
-            },
-            other => panic!("expected init request, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn serializes_ok_response() {
         let response = ResponseMessage::ok("req-1");
         let line = serialize_response(&response).expect("response should serialize");
@@ -670,6 +312,173 @@ mod tests {
                 }
                 "#
             )
+        );
+    }
+    #[test]
+    fn parses_shared_init_parameters_and_round_trips() {
+        let line = r#"{"id":"1","action":"init","target":{"A|B":{"mode":"output","initial":1,"final":0},"C|D":{"mode":"trigger","edge":"both"},"E":{"mode":"input"}}}"#;
+        let request = parse_request_line(line).unwrap();
+        let RequestPayload::Init { target } = &request.payload else {
+            panic!("init")
+        };
+        assert_eq!(target.len(), 3);
+        assert!(matches!(
+            target.iter().next().unwrap().1,
+            super::request::PinConfigRequest::Output {
+                initial_value: Some(1),
+                final_value: Some(0),
+                ..
+            }
+        ));
+        assert_eq!(
+            parse_request_line(&serde_json::to_string(&request).unwrap()).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_binding_in_all_modes() {
+        for mode in ["input", "output", "trigger"] {
+            let line = serde_json::json!({"id":"1","action":"init","target":{"A":{"mode":mode,"pin":"B"}}}).to_string();
+            assert!(
+                parse_request_line(&line)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown field `pin`")
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_bit_initial_and_final_even_for_groups() {
+        for field in ["initial", "final"] {
+            for value in [2, 255] {
+                let line = serde_json::json!({"id":"1","action":"init","target":{"A|B":{"mode":"output",field:value}}}).to_string();
+                assert!(
+                    parse_request_line(&line)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("must be 0 or 1")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn init_groups_are_not_limited_to_eight_pins() {
+        let line = r#"{"id":"1","action":"init","target":{"A|B|C|D|E|F|G|H|I":{"mode":"input"}}}"#;
+        assert!(parse_request_line(line).is_ok());
+        for action in ["get", "set"] {
+            let target = if action == "get" {
+                serde_json::json!("A|B|C|D|E|F|G|H|I")
+            } else {
+                serde_json::json!({"A|B|C|D|E|F|G|H|I":0})
+            };
+            let line = serde_json::json!({"id":"1","action":action,"target":target}).to_string();
+            assert!(
+                parse_request_line(&line)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("reserved")
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_expressions_in_every_request_form() {
+        for expression in ["", "|A", "A|", "A||B", "A|A", "lag", "A|lag"] {
+            for request in [
+                serde_json::json!({"id":"1","action":"init","target":{expression:{"mode":"input"}}}),
+                serde_json::json!({"id":"1","action":"get","target":expression}),
+                serde_json::json!({"id":"1","action":"get","target":[expression]}),
+                serde_json::json!({"id":"1","action":"set","target":{expression:0}}),
+                serde_json::json!({"id":"1","action":"set","target":[{expression:0}]}),
+            ] {
+                assert!(
+                    parse_request_line(&request.to_string()).is_err(),
+                    "{request}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn expressions_preserve_exact_names_and_order() {
+        assert_eq!(
+            super::request::PinSelector::parse("B| A".to_owned())
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>(),
+            ["B", " A"]
+        );
+        assert!(parse_request_line(r#"{"id":"1","action":"init","target":{}}"#).is_err());
+    }
+    #[test]
+    fn rejects_duplicate_json_init_keys() {
+        let error = parse_request_line(
+            r#"{"id":"1","action":"init","target":{"A":{"mode":"input"},"A":{"mode":"output"}}}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate key"));
+    }
+    #[test]
+    fn expression_requests_round_trip_without_changing_shape() {
+        for line in [
+            r#"{"id":"1","action":"get","target":"A"}"#,
+            r#"{"id":"1","action":"get","target":["A","B"]}"#,
+            r#"{"id":"1","action":"set","target":{"A":1,"B":0}}"#,
+            r#"{"id":"1","action":"set","target":[{"A":1,"B":0},{"lag":1,"B":1,"A":0}]}"#,
+        ] {
+            let request = parse_request_line(line).unwrap();
+            assert_eq!(
+                parse_request_line(&serde_json::to_string(&request).unwrap()).unwrap(),
+                request
+            );
+        }
+    }
+    #[test]
+    fn rejects_shared_names_in_get_and_all_set_forms() {
+        for line in [
+            r#"{"id":"1","action":"get","target":"A|B"}"#,
+            r#"{"id":"1","action":"get","target":["A","B|C"]}"#,
+            r#"{"id":"1","action":"set","target":{"A|B":1}}"#,
+            r#"{"id":"1","action":"set","target":[{"A":1},{"lag":1,"A|B":0}]}"#,
+        ] {
+            assert!(parse_request_line(line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn set_values_are_single_bits_in_every_step() {
+        for value in [2, 255] {
+            for target in [
+                serde_json::json!({"A":value}),
+                serde_json::json!([{"A":0},{"lag":1,"A":value}]),
+            ] {
+                let line = serde_json::json!({"id":"1","action":"set","target":target}).to_string();
+                assert!(
+                    parse_request_line(&line)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("must be 0 or 1")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_set_keys_are_rejected_and_multiple_reads_have_no_eight_pin_limit() {
+        for line in [
+            r#"{"id":"1","action":"set","target":{"A":0,"A":1}}"#,
+            r#"{"id":"1","action":"set","target":[{"A":0,"A":1}]}"#,
+        ] {
+            assert!(parse_request_line(line).is_err());
+        }
+        assert!(
+            parse_request_line(
+                r#"{"id":"1","action":"get","target":["A","B","C","D","E","F","G","H","I"]}"#
+            )
+            .is_ok()
         );
     }
 }

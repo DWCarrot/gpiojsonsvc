@@ -347,7 +347,7 @@ socket = "{socket}"
             "id": "1",
             "action": "init",
             "target": {
-                "OUT": { "mode": "output", "pin": "gpiochip0:7" }
+                "gpiochip0:7": { "mode": "output" }
             }
         }))
         .await;
@@ -357,7 +357,7 @@ socket = "{socket}"
         .rpc(&json!({
             "id": "2",
             "action": "set",
-            "target": { "OUT": 1 }
+            "target": { "gpiochip0:7": 1 }
         }))
         .await;
     assert_eq!(set_out["status"], "ok");
@@ -390,9 +390,9 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
             "id": "1",
             "action": "init",
             "target": {
-                "IN": { "mode": "input", "pin": "gpiochip0:0" },
-                "OUT": { "mode": "output", "pin": "gpiochip0:7" },
-                "LED": { "mode": "output", "pin": "GPIO1_B5" }
+                "gpiochip0:0": { "mode": "input" },
+                "gpiochip0:7": { "mode": "output" },
+                "GPIO1_B5": { "mode": "output" }
             }
         }))
         .await;
@@ -400,7 +400,7 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
     assert_eq!(init["status"], "ok");
 
     let get_in = client
-        .rpc(&json!({ "id": "2", "action": "get", "target": "IN" }))
+        .rpc(&json!({ "id": "2", "action": "get", "target": "gpiochip0:0" }))
         .await;
     assert_eq!(get_in["id"], "2");
     assert_eq!(get_in["status"], "pin_value");
@@ -410,7 +410,7 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
         .rpc(&json!({
             "id": "3",
             "action": "set",
-            "target": { "OUT": 1 }
+            "target": { "gpiochip0:7": 1 }
         }))
         .await;
     assert_eq!(set_out["id"], "3");
@@ -421,7 +421,7 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
     assert_eq!(line_level(&chip0, "0"), 'L');
 
     let get_in_again = client
-        .rpc(&json!({ "id": "4", "action": "get", "target": "IN" }))
+        .rpc(&json!({ "id": "4", "action": "get", "target": "gpiochip0:0" }))
         .await;
     assert_eq!(get_in_again["id"], "4");
     assert_eq!(get_in_again["status"], "pin_value");
@@ -431,8 +431,8 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
         "id": "5",
         "action": "set",
         "target": [
-            { "LED": 1 },
-            { "lag": 300, "LED": 0 }
+            { "GPIO1_B5": 1 },
+            { "lag": 300, "GPIO1_B5": 0 }
         ]
     });
     client.send(&stepped_request).await;
@@ -463,7 +463,7 @@ async fn uds_unmapped_pin_returns_correlated_error() {
             "id": "init-unmapped",
             "action": "init",
             "target": {
-                "GHOST": { "mode": "output", "pin": "not-in-config" }
+                "not-in-config": { "mode": "output" }
             }
         }))
         .await;
@@ -488,13 +488,11 @@ async fn uds_init_initial_final_and_omitted_values() {
             "id": "init-1",
             "action": "init",
             "target": {
-                "OUT": {
-                    "mode": "output",
-                    "pin": "gpiochip0:7",
+                "gpiochip0:7": { "mode": "output",
                     "initial": 1,
                     "final": 0
                 },
-                "LED": { "mode": "output", "pin": "GPIO1_B5" }
+                "GPIO1_B5": { "mode": "output" }
             }
         }))
         .await;
@@ -518,9 +516,7 @@ async fn sigint_applies_final_output_values() {
             "id": "init-1",
             "action": "init",
             "target": {
-                "OUT": {
-                    "mode": "output",
-                    "pin": "gpiochip0:7",
+                "gpiochip0:7": { "mode": "output",
                     "initial": 1,
                     "final": 0
                 }
@@ -558,7 +554,7 @@ async fn sigint_exits_while_a_client_is_connected() {
             "id": "init-1",
             "action": "init",
             "target": {
-                "OUT": { "mode": "output", "pin": "gpiochip0:7" }
+                "gpiochip0:7": { "mode": "output" }
             }
         }))
         .await;
@@ -584,4 +580,77 @@ async fn sigint_exits_while_a_client_is_connected() {
         !harness.socket.exists(),
         "socket path should be removed on shutdown"
     );
+}
+
+#[tokio::test]
+async fn separate_cross_chip_writes_and_invalid_later_step() {
+    let harness = Harness::spawn_mock().await;
+    let mut client = harness.connect().await;
+    assert_eq!(
+        client
+            .rpc(&json!({"id":"1","action":"init","target":{
+                "gpiochip0:7|GPIO1_B5":{"mode":"output","initial":0,"final":0}
+            }}))
+            .await["status"],
+        "ok"
+    );
+    assert_eq!(
+        client
+            .rpc(&json!({"id":"2","action":"set","target":{
+                "gpiochip0:7":1,"GPIO1_B5":1
+            }}))
+            .await["status"],
+        "ok"
+    );
+    wait_for_line_level(&harness.chip0, "7", 'H').await;
+    wait_for_line_level(&harness.chip1, "13", 'H').await;
+    // All steps must compile before any write occurs.
+    assert_eq!(
+        client
+            .rpc(&json!({"id":"3","action":"set","target":[
+                {"gpiochip0:7":0,"GPIO1_B5":0},{"lag":1,"MISSING":0}
+            ]}))
+            .await["status"],
+        "error"
+    );
+    assert_eq!(
+        line_level(&std::fs::read_to_string(&harness.chip0).unwrap(), "7"),
+        'H'
+    );
+    assert_eq!(
+        line_level(&std::fs::read_to_string(&harness.chip1).unwrap(), "13"),
+        'H'
+    );
+    assert_eq!(
+        client
+            .rpc(&json!({"id":"4","action":"set","target":[
+                {"gpiochip0:7":0,"GPIO1_B5":0},{"lag":1,"GPIO1_B5":1}
+            ]}))
+            .await["status"],
+        "ok"
+    );
+    wait_for_line_level(&harness.chip0, "7", 'L').await;
+    wait_for_line_level(&harness.chip1, "13", 'H').await;
+    drop(client);
+    wait_for_line_level(&harness.chip1, "13", 'L').await;
+}
+
+#[tokio::test]
+async fn init_group_allows_individual_and_reordered_cross_chip_reads() {
+    let harness = Harness::spawn_mock().await;
+    std::fs::write(&harness.chip1, CHIP1_XML.replace(">L<", ">H<")).unwrap();
+    let mut client = harness.connect().await;
+    assert_eq!(
+        client
+            .rpc(&json!({"id":"1","action":"init","target":{
+                "gpiochip0:0|GPIO1_B5": {"mode":"input","bias":"pull_up"},
+                "gpiochip0:7": {"mode":"input","bias":"pull_down"}
+            }}))
+            .await["status"],
+        "ok"
+    );
+    let response = client
+        .rpc(&json!({"id":"2","action":"get","target":["gpiochip0:0","GPIO1_B5","gpiochip0:7"]}))
+        .await;
+    assert_eq!(response["value"], json!([0, 1, 0]));
 }

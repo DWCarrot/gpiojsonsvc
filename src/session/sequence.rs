@@ -8,7 +8,7 @@ use crate::gpio::ValidLineValue;
 use crate::protocol::request::SetStepRequest;
 
 use super::batch::CombinedOffsets;
-use super::compiled::CompiledTargets;
+use super::compiled::CompiledPins;
 use super::execute::compile_set_batch;
 use super::state::SessionError;
 
@@ -34,7 +34,7 @@ pub struct PendingSetSequence {
 impl PendingSetSequence {
     /// Compiles every protocol step into a write batch before any GPIO I/O.
     pub fn compile_steps<'a>(
-        compiled: &'a CompiledTargets,
+        compiled: &'a CompiledPins,
         steps: &'a [SetStepRequest],
         chip_count: usize,
     ) -> Result<PendingCompiledSteps, SessionError<'a>> {
@@ -133,28 +133,32 @@ mod tests {
     use tokio::time::Instant;
 
     use crate::gpio::ValidLineValue;
+    use crate::protocol::common::ArrayMap;
     use crate::protocol::request::SetStepRequest;
-    use crate::session::CompiledTarget;
-    use crate::session::CompiledTargets;
+    use crate::session::CompiledPin;
+    use crate::session::CompiledPins;
+    use crate::session::PinMode;
     use crate::session::ResolvedPin;
-    use crate::session::ResolvedPins;
-    use crate::session::TargetMode;
 
     use super::PendingSetSequence;
 
-    fn output_targets() -> CompiledTargets {
+    fn writes<const N: usize>(entries: [(String, u8); N]) -> ArrayMap<String, u8> {
+        ArrayMap::from(entries)
+    }
+
+    fn output_targets() -> CompiledPins {
         let mut by_name = BTreeMap::new();
         by_name.insert(
             "OUT".to_owned(),
-            CompiledTarget {
-                pins: ResolvedPins::Single(ResolvedPin {
+            CompiledPin {
+                pin: ResolvedPin {
                     chip_index: 0,
                     offset: 2,
-                }),
-                mode: TargetMode::Output,
+                },
+                mode: PinMode::Output,
             },
         );
-        CompiledTargets {
+        CompiledPins {
             by_name,
             trigger_by_pin: BTreeMap::new(),
         }
@@ -166,11 +170,11 @@ mod tests {
         let steps = vec![
             SetStepRequest {
                 lag: 0,
-                target: BTreeMap::from([("OUT".to_owned(), 1)]),
+                target: writes([("OUT".to_owned(), 1)]),
             },
             SetStepRequest {
                 lag: 100,
-                target: BTreeMap::from([("OUT".to_owned(), 0)]),
+                target: writes([("OUT".to_owned(), 0)]),
             },
         ];
 
@@ -199,15 +203,15 @@ mod tests {
         let steps = vec![
             SetStepRequest {
                 lag: 0,
-                target: BTreeMap::from([("OUT".to_owned(), 1)]),
+                target: writes([("OUT".to_owned(), 1)]),
             },
             SetStepRequest {
                 lag: 100,
-                target: BTreeMap::from([("OUT".to_owned(), 0)]),
+                target: writes([("OUT".to_owned(), 0)]),
             },
             SetStepRequest {
                 lag: 300,
-                target: BTreeMap::from([("OUT".to_owned(), 1)]),
+                target: writes([("OUT".to_owned(), 1)]),
             },
         ];
         let compiled_steps =
@@ -250,7 +254,7 @@ mod tests {
         let compiled = output_targets();
         let steps = vec![SetStepRequest {
             lag: 0,
-            target: BTreeMap::from([("OUT".to_owned(), 1)]),
+            target: writes([("OUT".to_owned(), 1)]),
         }];
         let compiled_steps =
             PendingSetSequence::compile_steps(&compiled, &steps, 1).expect("compile");

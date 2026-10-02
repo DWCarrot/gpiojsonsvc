@@ -1,302 +1,151 @@
 # Debug client
 
-`tools/debug_client.py` is a Python 3 Unix-socket client for a running `gpiojsonsvc` process. It speaks the live protocol (`id` + `action`) over newline-delimited JSON and prints pretty-printed request/response objects.
+`tools/debug_client.py` is a Python 3 Unix-socket client using only the standard library. It sends newline-delimited JSON and prints requests, responses, and unsolicited events. See [protocol.md](protocol.md) for wire rules and [architecture.md](architecture.md) for session behavior.
 
-Request and response shapes: [protocol.md](protocol.md). How sessions and events work: [architecture.md](architecture.md). Mock chip XML files: [mock_chip.md](mock_chip.md).
-
-## Requirements
-
-- Python 3 (stdlib only; no extra packages)
-- A listening service. Start the mock backend first, for example:
+## Start and connect
 
 ```bash
 cargo run -- --mock /path/to/gpiojsonsvc.toml
+python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock
 ```
 
-The default socket path is `/tmp/gpiojsonsvc.sock`. Match `--socket` to `service.socket` in the TOML if it differs.
+`--socket` defaults to `/tmp/gpiojsonsvc.sock`; `--timeout` defaults to 5 seconds. Match the socket to the service configuration. Pin names are exact `[pins.gpiod]` keys. Use `A|B` to share init parameters; quote expressions containing `|` in shell commands.
 
-Pin strings you pass to `init` must be exact `[pins.gpiod]` keys from that config.
+Commands are default/`repl`, `init`, `get`, `set`, `raw`, and `script`.
 
-Offline construction tests (no service):
+## Session lifetime
 
-```bash
-python3 tools/test_debug_client.py
-```
+`init` must succeed once on the same connection before `get` or `set`. The wizard and `script` keep one connection for the entire session. Each one-shot command (`init`, `get`, `set`, `raw`) connects, sends one request, receives its reply, and disconnects. A later command in another process cannot reuse that initialized session.
 
-## Invocation
-
-Run from the repository root. Omitting a subcommand (or using `repl`) opens the field-by-field wizard on one socket session:
-
-```bash
-python3 tools/debug_client.py [--socket PATH] [--timeout SECONDS]
-python3 tools/debug_client.py [--socket PATH] [--timeout SECONDS] <command> ...
-```
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--socket` | `/tmp/gpiojsonsvc.sock` | Unix domain socket path |
-| `--timeout` | `5` | Socket timeout in seconds (connect and reads) |
-
-Commands: default/`repl` (wizard), `init`, `get`, `set`, `raw`, `script`.
+Use one-shot init to check configuration or the wizard/script for actual init/get/set sequences. Disconnect applies any configured final output values.
 
 ## Interactive wizard
 
-The client connects before the first prompt and stays connected until `quit` / `exit` / Ctrl-D. Each cycle asks for `action`, then either walks protocol fields or reads raw JSON, prints the request, sends it, and prints the response.
+Omit the subcommand or pass `repl`. The wizard connects once and prompts for each request. `help`, `quit`, `exit`, and Ctrl-D are local actions.
 
-`help`, `quit`, and `exit` are local-only (no send). Actions are `init`, `get`, `set`, or `raw`. Request ids are allocated as `"1"`, `"2"`, ... for the session unless a pasted request already has `id`.
+```text
+action [init/get/set/raw, help/quit]: init
+pin expression (A|B): GPIO1_B5|GPIO1_B6
+mode [input/output/trigger]: output
+drive [push_pull/open_drain/open_source, empty=omit]: push_pull
+initial [0/1 per pin, empty=omit]: 0
+final [0/1 per pin, empty=omit]: 0
+add another pin group? [y/N]: n
+```
+
+Each group shares its init parameters. There is no separate target-name prompt or pin binding. Trigger groups are supported, and their events identify individual pin names. Initial/final values are 0 or 1 per pin, not packed integers.
+
+For get, enter space-separated pin names such as `GPIO1_A0 GPIO1_A1`. One name gives one value; multiple names give an array. For set, choose immediate or stepped, then enter pin name/value pairs with values of 0 or 1. End each map with an empty name. Later steps prompt for a positive millisecond delay.
+
+Optional init fields are omitted when left empty. Invalid input prints an error and returns to the action prompt without closing the connection. The wizard strips surrounding prompt whitespace; use raw JSON for configuration keys containing significant surrounding whitespace.
+
+The wizard reads events while waiting for keyboard input and prints them without ending the session.
+
+## Init commands
 
 ```bash
-python3 tools/debug_client.py
-# action [init/get/set/raw, help/quit]: init
-# target name: LED
-# mode [input/output/trigger]: output
-# pin (space-split): GPIO1_B5
-# drive [push_pull/open_drain/open_source, empty=omit]: push_pull
-# initial [0-255, empty=omit]:
-# final [0-255, empty=omit]:
-# add another target? [y/N]: n
-# (prints request JSON, sends, prints response)
-# action [init/get/set/raw, help/quit]: set
-# form [immediate/stepped]: immediate
-# target name: LED
-# value: 1
-# target name:
-# action [init/get/set/raw, help/quit]: quit
+python3 tools/debug_client.py init --mode output --pin GPIO1_B5 --initial 1 --final 0
+python3 tools/debug_client.py init --mode input --pin 'GPIO1_A0|GPIO1_A1' --bias pull_up
+python3 tools/debug_client.py init --mode trigger --pins GPIO1_A2 GPIO1_A3 --edge both
 ```
 
-Empty field-by-field lines skip or re-prompt required fields. Optional fields (`bias` / `drive` / `edge` / `initial` / `final`) are omitted when left empty. Validation errors (empty `init` target map, trigger with multiple pins, and similar) print and return to the action prompt without sending or closing the socket.
+Use `--pin` for one pin or a quoted expression, or `--pins` for a list joined with `|`. Both forms support all modes; init groups have no eight-pin limit. `--name` has been removed.
 
-### Raw JSON (`raw`)
+Optional parameters:
 
-Paste a complete request object containing `action`, then a blank line to end. The input may span multiple lines. `action` must be `init`, `get`, or `set`; a missing or blank `id` is filled from the session allocator.
+- Input `--bias`: `as_is`, `disabled`, `pull_up`, `pull_down`.
+- Output `--drive`: `push_pull`, `open_drain`, `open_source`.
+- Output `--initial` and `--final`: integer 0 or 1, applied to every pin in the group. Omission preserves the request-time value or skips the close write respectively.
+- Trigger `--edge`: `rising` (default), `falling`, `both`.
 
+For multiple entries, supply a complete target map:
+
+```bash
+python3 tools/debug_client.py init --target-json '{"GPIO1_B5":{"mode":"output","initial":1},"GPIO1_A0":{"mode":"input"}}'
 ```
-action [...]: raw
-JSON (end with an empty line):
+
+Do not mix `--target-json` with `--mode`, `--pin`, or `--pins`. The nested `pin` field from the old protocol is rejected.
+
+## Get and set commands
+
+These examples show command syntax; get/set on a fresh connection return `session is not initialized`. Use equivalent requests in the wizard or script after init.
+
+```bash
+python3 tools/debug_client.py get --target GPIO1_A0
+python3 tools/debug_client.py get --target GPIO1_A0 GPIO1_A1
+python3 tools/debug_client.py set --target GPIO1_B6 --value 1
+python3 tools/debug_client.py set --target-json '{"GPIO1_B5":1,"GPIO1_B6":1,"GPIO1_B7":0}'
+python3 tools/debug_client.py set --steps-json '[{"GPIO1_B5":1,"GPIO1_B6":0},{"lag":100,"GPIO1_B6":1}]'
+```
+
+Reads permit input and trigger pins; writes permit outputs. Get and set accept only individual names, with values of 0 or 1. Init sharing does not restrict which pins a later request can address.
+
+Set accepts exactly one of `--target` plus `--value`, `--target-json`, or `--steps-json`. Step 0 omits lag or uses zero; later steps require positive `u32` millisecond delays. All steps are validated before execution. The reply follows the last step; another set while a sequence is running is rejected, while get remains allowed. Disconnect cancels remaining steps and applies final values.
+
+## Raw JSON
+
+One-shot raw sends the object as written:
+
+```bash
+python3 tools/debug_client.py raw '{"id":"1","action":"get","target":"GPIO1_A0"}'
+```
+
+In the wizard, choose `raw`, paste a complete object with an `action`, and finish with a blank line. Multi-line JSON is supported. A missing/blank ID is filled by the wizard's allocator:
+
+```json
 {
-  "action": "init",
-  "target": {
-    "LED": {
-      "mode": "output",
-      "pin": "GPIO1_B5"
-    }
+  "action":"init",
+  "target":{
+    "GPIO1_B5|GPIO1_B6":{"mode":"output","initial":0,"final":0}
   }
 }
-
 ```
 
-One-shot `init` / `get` / `set` / `raw` and `script` stay unchanged.
+Raw requests bypass the canned builders' validation, which is useful for testing malformed requests. The service still validates them.
 
-## Sessions vs. one-shot commands
-
-Each accepted connection on the service is its own session. `init` must succeed **once on that connection** before `get` or `set`. Disconnect drops the session.
-
-| Command | Connection lifetime |
-| --- | --- |
-| `init`, `get`, `set`, `raw` | Connect, send **one** request, wait for the matching response, disconnect |
-| default / `repl`, `script` | One connection for the whole interactive session or file |
-
-A second process cannot continue a session started by the first. This fails:
-
-```bash
-python3 tools/debug_client.py init --name LED --mode output --pin GPIO1_B5
-python3 tools/debug_client.py get --target LED
-```
-
-The second process is not initialized. Use the wizard (`python3 tools/debug_client.py` or `repl`) or `script` for any sequence that needs `init` plus later `get`/`set`, or to observe trigger `event` messages after `init`.
-
-Canned `init`/`get`/`set` are still useful to inspect the JSON they would send (`request:` is printed before the wire write) and to exercise a single request when you already know the session state, for example sending a lone `init` to check pin mapping.
-
-## Wire format and output
-
-The client writes each request as compact JSON plus `\r\n`. The server frames with `\n`. Incoming lines are parsed as JSON objects.
-
-Stdout looks like:
-
-```
-request:
-{
-  "action": "init",
-  "id": "1",
-  ...
-}
-response:
-{
-  "id": "1",
-  "status": "ok"
-}
-```
-
-Keys in printed objects are sorted. That is display only; the payload on the wire is not reordered for protocol meaning.
-
-Connect failures, missing socket files, and similar OS errors print `debug client error: ...` on stderr and exit `1`.
-
-## Request ids
-
-- The wizard and canned `init` / `get` / `set` allocate string ids `"1"`, `"2"`, `"3"`, ... unless you pass `--id` on a one-shot command.
-- Interactive `raw` keeps a pasted `id`; a missing or blank `id` uses the allocator.
-- One-shot commands send a single request, so the default is almost always `"1"`.
-- One-shot `raw` and `script` send the `id` field as written. They do not rewrite it.
-
-Trigger `event` messages reuse the successful `init` request `id`. The client still treats `status: "event"` as unsolicited, not as the reply to the current request.
-
-## Unsolicited messages
-
-While waiting for a matching response, the client keeps reading. A line is:
-
-- **response** if it is not an event and (`id` matches the request, or the request had no usable `id`)
-- **event** if `status` is `"event"` (even when `id` equals the `init` id)
-- **unsolicited** otherwise (for example a late reply for a different id)
-
-Events and other non-matching messages are printed with prefix `event:` or `unsolicited:` and then skipped. If the server closes before a matching non-event reply, the client raises `server closed the connection without a matching response`.
-
-One-shot commands disconnect as soon as the matching reply arrives, so they will not sit and print later trigger events. Use the wizard (leave the prompt open) or a `script` that ends with a request that stays blocked only until its own reply.
-
-In the wizard, socket reads use `select`. While a field prompt is waiting, trigger `event` lines are printed as they arrive and the prompt is reprinted. One-shot `init` / `get` / `set` / `raw` and `script` wait on the socket only (stdin is not multiplexed). Events that arrive **while** a later request is waiting are still printed as `event:`.
-
-## `init`
-
-Configure logical targets. Must be the first successful request on a connection. A second `init` on the same connection is an error.
-
-Single named target:
-
-```bash
-python3 tools/debug_client.py init --name LED --mode output --pin GPIO1_B5
-python3 tools/debug_client.py init --name IN --mode input --pin gpiochip0:7 --bias pull_up
-python3 tools/debug_client.py init --name IRQ --mode trigger --pin GPIO1_A2 --edge rising
-```
-
-Combined `input`/`output` (up to eight pins; first pin is the high bit):
-
-```bash
-python3 tools/debug_client.py init --name BUS --mode output --pins GPIO1_B5 GPIO1_B6 GPIO1_B7
-```
-
-`--mode` is one of `input`, `output`, `trigger`. Optional flags:
-
-| Flag | Applies to | Values |
-| --- | --- | --- |
-| `--bias` | `input` | `as_is`, `disabled`, `pull_up`, `pull_down` |
-| `--drive` | `output` | `push_pull`, `open_drain`, `open_source` |
-| `--initial` | `output` | packed `u8` applied when the line is requested |
-| `--final` | `output` | packed `u8` applied on graceful session close |
-| `--edge` | `trigger` | `rising`, `falling`, `both` |
-
-Use either `--pin` or `--pins`, not both. `--pins` is for combined targets; `trigger` still needs a single pin.
-
-Multiple targets, or a full `target` object, via JSON:
-
-```bash
-python3 tools/debug_client.py init --target-json '{"LED":{"mode":"output","pin":"GPIO1_B5","drive":"push_pull"},"IN":{"mode":"input","pin":"gpiochip0:7"}}'
-```
-
-Do not mix `--target-json` with `--name` / `--mode` / `--pin` / `--pins`.
-
-```bash
-python3 tools/debug_client.py init --id init-1 --name LED --mode output --pin GPIO1_B5
-```
-
-## `get`
-
-Read one or more `input` or `trigger` targets. Output targets are not readable.
-
-```bash
-python3 tools/debug_client.py get --target IN
-python3 tools/debug_client.py get --target IN IRQ
-python3 tools/debug_client.py get --id get-1 --target IN
-```
-
-`--target` is required. One name becomes a JSON string; two or more become a JSON array. A successful reply is `status: pin_value` with `value` a `u8` or an array of `u8` in request order.
-
-On a fresh connection this returns `session is not initialized` unless you send `init` first on the same socket (wizard / `script`).
-
-## `set`
-
-Write `output` targets. Values are integers in the `u8` range; a target of width `n` rejects values `>= 2^n`.
-
-Choose **one** of:
-
-Immediate single target:
-
-```bash
-python3 tools/debug_client.py set --target LED --value 1
-```
-
-Immediate map (several targets at once):
-
-```bash
-python3 tools/debug_client.py set --target-json '{"LED":1,"BUS":5}'
-```
-
-Stepped sequence (JSON array). Step 0 has no `lag`; later steps include `lag` in milliseconds relative to the previous step. The service replies `ok` after the last step is applied.
-
-```bash
-python3 tools/debug_client.py set --steps-json '[{"LED":1},{"lag":100,"LED":0},{"lag":200,"LED":1}]'
-```
-
-`--target` without `--value` is an error. Mixing `--target`/`--value`, `--target-json`, and `--steps-json` is an error.
-
-A second `set` while a sequence is still running on that connection returns `a set request is already in progress`. Disconnect cancels remaining steps.
-
-## `raw`
-
-Send one JSON object exactly as given. The `id` is not rewritten.
-
-```bash
-python3 tools/debug_client.py raw '{"id":"1","action":"get","target":"LED"}'
-```
-
-Useful for malformed or edge-case payloads. Same one-shot connection rules as `init`/`get`/`set`.
-
-## `repl`
-
-Same as omitting a command: the field-by-field wizard on one connection. See [Interactive wizard](#interactive-wizard).
-
-```bash
-python3 tools/debug_client.py repl
-```
-
-## `script`
-
-Same as `repl`, but requests come from a file: one JSON object per line. Blank lines and lines whose first non-whitespace character is `#` are skipped.
+## Script
 
 ```bash
 python3 tools/debug_client.py script /path/to/session.jsonl
 ```
 
-Example file:
+The file contains one request object per line; empty lines and lines beginning with `#` after whitespace are skipped. All requests use one connection, and each waits for its matching response before the next is sent.
+
+With the corresponding configuration keys:
 
 ```json
-{"id":"1","action":"init","target":{"LED":{"mode":"output","pin":"GPIO1_B5"},"IN":{"mode":"input","pin":"gpiochip0:7"}}}
-{"id":"2","action":"set","target":{"LED":1}}
-{"id":"3","action":"get","target":"IN"}
+{"id":"1","action":"init","target":{"GPIO1_B5|GPIO1_B6":{"mode":"output","initial":0,"final":0},"GPIO1_A0":{"mode":"input"},"GPIO1_A2":{"mode":"trigger","edge":"both"}}}
+{"id":"2","action":"set","target":{"GPIO1_B6":1,"GPIO1_B5":0}}
+{"id":"3","action":"get","target":["GPIO1_A0","GPIO1_A2"]}
+{"id":"4","action":"set","target":[{"GPIO1_B5":1},{"lag":50,"GPIO1_B5":0,"GPIO1_B6":0}]}
 ```
 
-The file must contain at least one JSON object. Each object is sent in order on a single connection; the next line waits until the previous matching response arrives.
+## IDs, output, and events
 
-## Typical session (`script`)
+The wizard and canned commands allocate increasing string IDs (`"1"`, `"2"`, …). Use `--id` to override an ID on a one-shot command. One-shot raw and script preserve IDs as written.
 
-With a mock config that maps `GPIO1_B5` and `gpiochip0:7`:
+Requests are sent with `\r\n`; responses are read as newline-delimited JSON. Printed objects are formatted and sorted for display. `request:` precedes the outgoing object; `response:` precedes its matching non-event reply.
 
-```json
-{"id":"init-1","action":"init","target":{"LED":{"mode":"output","pin":"GPIO1_B5","drive":"push_pull"},"IN":{"mode":"input","pin":"gpiochip0:7"},"IRQ":{"mode":"trigger","pin":"gpiochip0:7","edge":"both"}}}
-{"id":"set-1","action":"set","target":{"LED":1}}
-{"id":"get-1","action":"get","target":["IN","IRQ"]}
-{"id":"set-2","action":"set","target":[{"LED":0},{"lag":50,"LED":1}]}
-```
+Trigger events reuse the init ID but are always unsolicited, even when their ID matches the awaited request. They print as `event:` and do not replace a response. Other unmatched messages print as `unsolicited:`. Events arriving during a later request are still displayed. One-shot commands leave after the matching reply; use the wizard to keep observing events.
 
-Trigger `event` objects that arrive while a later request is waiting are printed as `event:` and do not replace that request’s `response:`.
+Connection failures and similar OS errors print `debug client error: ...` to stderr and exit 1. Closing before a matching reply raises `server closed the connection without a matching response`.
 
-## Importing as a library
+## Importing and testing
 
-`tools/test_debug_client.py` imports the module (`debug_client`) and calls helpers such as `build_init_request`, `build_get_request`, `build_set_request`, and `wait_for_matching_response`. Put `tools/` on `PYTHONPATH` if you import from elsewhere:
+Put `tools/` on `PYTHONPATH` to use the client as a library:
 
 ```python
 from debug_client import DebugClient, build_init_request, build_set_request
 
 with DebugClient("/tmp/gpiojsonsvc.sock", timeout=5.0) as client:
-    client.send(build_init_request({"LED": {"mode": "output", "pin": "GPIO1_B5"}}, "1"))
-    client.send(build_set_request({"LED": 1}, "2"))
+    client.send(build_init_request({"GPIO1_B5|GPIO1_B6": {"mode": "output"}}, "1"))
+    client.send(build_set_request({"GPIO1_B6": 1, "GPIO1_B5": 0}, "2"))
 ```
 
-`DebugClient.send` waits for the matching non-event response and, in the CLI path, prints unsolicited traffic via `print_unsolicited`.
+`build_target_config` now accepts the mode and optional parameters only; put the pin expression in the surrounding init map. `DebugClient.send` waits for the matching non-event reply and displays unsolicited messages.
+
+Run the tests (no live service needed):
+
+```bash
+python3 tools/test_debug_client.py
+```

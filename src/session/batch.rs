@@ -13,7 +13,6 @@ pub enum CombinedOffsetsError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollectRule {
     pub target_slot: usize,
-    pub bit_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,34 +139,13 @@ mod tests {
     fn preserves_insertion_order_per_chip() {
         let mut batch = CombinedOffsets::<CollectRule>::new(2);
         batch
-            .add(
-                0,
-                1,
-                CollectRule {
-                    target_slot: 0,
-                    bit_index: 0,
-                },
-            )
+            .add(0, 1, CollectRule { target_slot: 0 })
             .expect("add");
         batch
-            .add(
-                0,
-                2,
-                CollectRule {
-                    target_slot: 0,
-                    bit_index: 1,
-                },
-            )
+            .add(0, 2, CollectRule { target_slot: 0 })
             .expect("add");
         batch
-            .add(
-                1,
-                4,
-                CollectRule {
-                    target_slot: 1,
-                    bit_index: 0,
-                },
-            )
+            .add(1, 4, CollectRule { target_slot: 1 })
             .expect("add");
 
         assert_eq!(batch.offsets(0).expect("offsets"), &[1, 2]);

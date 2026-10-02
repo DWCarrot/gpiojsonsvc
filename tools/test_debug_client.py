@@ -13,38 +13,39 @@ import debug_client as dc
 
 
 class RequestConstructionTests(unittest.TestCase):
-    def test_init_request_uses_id_action_target_and_mode(self) -> None:
+    def test_init_request_uses_pin_expressions_and_shared_parameters(self) -> None:
         target = {
-            "GPIO4_B3": dc.build_target_config("input", "gpiochip0:2", bias="as_is"),
-            "GPIO4_B5": dc.build_target_config(
-                "output",
-                "gpiochip2:1",
-                drive="push_pull",
-                initial=1,
-                final=0,
-            ),
-            "GPIO1_A2": dc.build_target_config("trigger", "gpiochip1:1", edge="rising"),
-            "CombinedIN": dc.build_target_config(
-                "input",
-                ["gpiochip0:3", "gpiochip1:4"],
-                bias="pull_up",
-            ),
+            "GPIO4_B3": dc.build_target_config("input", bias="as_is"),
+            "GPIO4_B5|GPIO4_B6": dc.build_target_config("output", initial=1, final=0),
+            "GPIO1_A2|GPIO1_A3": dc.build_target_config("trigger", edge="rising"),
         }
-
         request = dc.build_init_request(target, "init-1")
+        self.assertEqual(request, {"id": "init-1", "action": "init", "target": target})
+        self.assertEqual(request["target"]["GPIO4_B5|GPIO4_B6"], {"mode": "output", "initial": 1, "final": 0})
+        self.assertTrue(all("pin" not in config for config in request["target"].values()))
 
-        self.assertEqual(request["id"], "init-1")
-        self.assertEqual(request["action"], "init")
-        self.assertEqual(request["target"]["GPIO4_B3"]["mode"], "input")
-        self.assertEqual(request["target"]["GPIO4_B3"]["pin"], "gpiochip0:2")
-        self.assertEqual(request["target"]["GPIO4_B5"]["mode"], "output")
-        self.assertEqual(request["target"]["GPIO4_B5"]["initial"], 1)
-        self.assertEqual(request["target"]["GPIO4_B5"]["final"], 0)
-        self.assertEqual(request["target"]["GPIO1_A2"]["edge"], "rising")
-        self.assertEqual(
-            request["target"]["CombinedIN"]["pin"],
-            ["gpiochip0:3", "gpiochip1:4"],
-        )
+    def test_rejects_legacy_binding_and_invalid_initial(self) -> None:
+        for config in [{"mode": "output", "pin": "A"}, {"mode": "output", "initial": 2}]:
+            with self.assertRaises(ValueError):
+                dc.build_init_request({"A|B": config}, "1")
+
+    def test_rejects_overlapping_init_groups(self) -> None:
+        with self.assertRaises(ValueError):
+            dc.build_init_request({"A|B": {"mode": "input"}, "B": {"mode": "input"}}, "1")
+
+    def test_get_set_require_single_pin_names_and_bit_values(self) -> None:
+        for expression in ["A|B", "A||B", "A|A", "|A", "A|", "lag", "A|B|C|D|E|F|G|H|I"]:
+            with self.assertRaises(ValueError):
+                dc.build_get_request(expression, "1")
+        self.assertEqual(dc.build_set_request({"A": 1, "B": 0}, "1")["target"], {"A": 1, "B": 0})
+        for target in [
+            {"A|B": 1},
+            {"A": 2},
+            [{"A": 0}, {"lag": 1, "A|B": 1}],
+            [{"A": 0}, {"lag": 1, "A": 2}],
+        ]:
+            with self.assertRaises(ValueError):
+                dc.build_set_request(target, "1")
 
     def test_get_single_target_stays_a_string(self) -> None:
         request = dc.build_get_request("GPIO4_B3", "2")
@@ -69,9 +70,9 @@ class RequestConstructionTests(unittest.TestCase):
         )
 
     def test_set_immediate_object_shape(self) -> None:
-        request = dc.build_set_request({"GPIO4_B5": 1, "GPIO4_B6": 2}, "set-2")
+        request = dc.build_set_request({"GPIO4_B5": 1, "GPIO4_B6": 0}, "set-2")
         self.assertEqual(request["action"], "set")
-        self.assertEqual(request["target"], {"GPIO4_B5": 1, "GPIO4_B6": 2})
+        self.assertEqual(request["target"], {"GPIO4_B5": 1, "GPIO4_B6": 0})
         self.assertIsInstance(request["target"], dict)
 
     def test_set_stepped_array_shape(self) -> None:
@@ -93,7 +94,7 @@ class RequestIdAllocatorTests(unittest.TestCase):
     def test_canned_commands_get_monotonically_increasing_ids(self) -> None:
         allocator = dc.RequestIdAllocator()
         first = dc.build_init_request(
-            {"LED": dc.build_target_config("output", "gpiochip0:1")},
+            {"LED": dc.build_target_config("output")},
             dc.canned_request_id(None, allocator),
         )
         second = dc.build_get_request("LED", dc.canned_request_id(None, allocator))
@@ -141,9 +142,8 @@ class CliBuilderTests(unittest.TestCase):
 
     def test_init_cli_single_target(self) -> None:
         args = self._namespace(
-            name="GPIO4_B5",
             mode="output",
-            pin="gpiochip2:1",
+            pin="GPIO4_B5",
             drive="push_pull",
             initial=1,
             final=0,
@@ -354,9 +354,9 @@ class EndToEndPayloadTests(unittest.TestCase):
         allocator = dc.RequestIdAllocator()
         init = dc.build_init_request(
             {
-                "IN": dc.build_target_config("input", "gpiochip0:0"),
-                "OUT": dc.build_target_config("output", "gpiochip0:7"),
-                "LED": dc.build_target_config("output", "GPIO1_B5"),
+                "IN": dc.build_target_config("input"),
+                "OUT": dc.build_target_config("output"),
+                "LED": dc.build_target_config("output"),
             },
             dc.canned_request_id(None, allocator),
         )
@@ -395,21 +395,18 @@ class InteractiveBuilderTests(unittest.TestCase):
             self._feed(
                 [
                     "init",
-                    "IN",
-                    "input",
                     "gpiochip0:7",
+                    "input",
                     "pull_up",
                     "y",
-                    "BUS",
+                    "GPIO1_B5|GPIO1_B6",
                     "output",
-                    "GPIO1_B5 GPIO1_B6",
                     "",
                     "",
                     "",
                     "y",
-                    "IRQ",
-                    "trigger",
                     "GPIO1_A2",
+                    "trigger",
                     "rising",
                     "n",
                 ]
@@ -419,19 +416,19 @@ class InteractiveBuilderTests(unittest.TestCase):
         self.assertEqual(request["id"], "1")
         self.assertEqual(request["action"], "init")
         self.assertEqual(
-            request["target"]["IN"],
-            {"mode": "input", "pin": "gpiochip0:7", "bias": "pull_up"},
+            request["target"]["gpiochip0:7"],
+            {"mode": "input", "bias": "pull_up"},
         )
         self.assertEqual(
-            request["target"]["BUS"],
-            {"mode": "output", "pin": ["GPIO1_B5", "GPIO1_B6"]},
+            request["target"]["GPIO1_B5|GPIO1_B6"],
+            {"mode": "output"},
         )
-        self.assertNotIn("drive", request["target"]["BUS"])
-        self.assertNotIn("initial", request["target"]["BUS"])
-        self.assertNotIn("final", request["target"]["BUS"])
+        self.assertNotIn("drive", request["target"]["GPIO1_B5|GPIO1_B6"])
+        self.assertNotIn("initial", request["target"]["GPIO1_B5|GPIO1_B6"])
+        self.assertNotIn("final", request["target"]["GPIO1_B5|GPIO1_B6"])
         self.assertEqual(
-            request["target"]["IRQ"],
-            {"mode": "trigger", "pin": "GPIO1_A2", "edge": "rising"},
+            request["target"]["GPIO1_A2"],
+            {"mode": "trigger", "edge": "rising"},
         )
 
     def test_get_one_name_stays_a_string(self) -> None:
@@ -454,11 +451,11 @@ class InteractiveBuilderTests(unittest.TestCase):
     def test_set_immediate_map(self) -> None:
         request = dc.build_request_interactively(
             "4",
-            self._feed(["set", "immediate", "LED", "1", "BUS", "5", ""]),
+            self._feed(["set", "immediate", "LED", "1", "A", "0", ""]),
         )
         self.assertEqual(
             request,
-            {"id": "4", "action": "set", "target": {"LED": 1, "BUS": 5}},
+            {"id": "4", "action": "set", "target": {"LED": 1, "A": 0}},
         )
 
     def test_set_stepped_omits_lag_on_first_step(self) -> None:
@@ -510,21 +507,9 @@ class InteractiveBuilderTests(unittest.TestCase):
         )
         self.assertEqual(request["target"], "IN")
 
-    def test_trigger_with_multiple_pins_returns_to_action_prompt(self) -> None:
-        request = dc.build_request_interactively(
-            "8",
-            self._feed(
-                [
-                    "init",
-                    "IRQ",
-                    "trigger",
-                    "GPIO1_A2 GPIO1_A3",
-                    "get",
-                    "IN",
-                ]
-            ),
-        )
-        self.assertEqual(request, {"id": "8", "action": "get", "target": "IN"})
+    def test_trigger_group_shares_edge_parameters(self) -> None:
+        request = dc.build_request_interactively("8", self._feed(["init", "GPIO1_A2|GPIO1_A3", "trigger", "both", "n"]))
+        self.assertEqual(request["target"], {"GPIO1_A2|GPIO1_A3": {"mode": "trigger", "edge": "both"}})
 
     def test_quit_raises_interactive_quit(self) -> None:
         with self.assertRaises(dc.InteractiveQuit):
@@ -540,8 +525,7 @@ class InteractiveBuilderTests(unittest.TestCase):
                     '  "action": "init",',
                     '  "target": {',
                     '    "LED": {',
-                    '      "mode": "output",',
-                    '      "pin": "GPIO1_B5"',
+                    '      "mode": "output"',
                     "    }",
                     "  }",
                     "}",
@@ -553,7 +537,7 @@ class InteractiveBuilderTests(unittest.TestCase):
         self.assertEqual(request["action"], "init")
         self.assertEqual(
             request["target"]["LED"],
-            {"mode": "output", "pin": "GPIO1_B5"},
+            {"mode": "output"},
         )
 
     def test_raw_get_request_keeps_id_and_action(self) -> None:
@@ -637,7 +621,7 @@ class InteractiveLoopTests(unittest.TestCase):
         self.assertEqual(parser.parse_args(["raw", "{}"]).command, "raw")
         self.assertEqual(
             parser.parse_args(
-                ["init", "--name", "LED", "--mode", "output", "--pin", "GPIO1_B5"]
+                ["init", "--mode", "output", "--pin", "GPIO1_B5"]
             ).command,
             "init",
         )
@@ -651,9 +635,8 @@ class InteractiveLoopTests(unittest.TestCase):
         lines = iter(
             [
                 "init",
-                "LED",
-                "output",
                 "GPIO1_B5",
+                "output",
                 "push_pull",
                 "1",
                 "0",
@@ -680,9 +663,9 @@ class InteractiveLoopTests(unittest.TestCase):
         payload = client.send.call_args[0][0]
         self.assertEqual(payload["id"], "1")
         self.assertEqual(payload["action"], "init")
-        self.assertEqual(payload["target"]["LED"]["pin"], "GPIO1_B5")
-        self.assertEqual(payload["target"]["LED"]["initial"], 1)
-        self.assertEqual(payload["target"]["LED"]["final"], 0)
+        self.assertNotIn("pin", payload["target"]["GPIO1_B5"])
+        self.assertEqual(payload["target"]["GPIO1_B5"]["initial"], 1)
+        self.assertEqual(payload["target"]["GPIO1_B5"]["final"], 0)
         client.drain_pending.assert_not_called()
 
     def test_repl_help_and_quit_do_not_send(self) -> None:

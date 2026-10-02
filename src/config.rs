@@ -156,6 +156,8 @@ pub enum ConfigError {
     EmptyPinMap,
     #[error("pin mapping keys must be non-empty")]
     EmptyPinKey,
+    #[error("{0}")]
+    InvalidPinKey(String),
     #[error("pin `{pin}` has an empty device path")]
     EmptyDevice { pin: String },
     #[error("service.gpio-consumer must be a non-empty string")]
@@ -229,6 +231,7 @@ impl ServiceConfig {
             if pin.is_empty() {
                 return Err(ConfigError::EmptyPinKey);
             }
+            crate::protocol::request::validate_pin_name(pin).map_err(ConfigError::InvalidPinKey)?;
             if spec.device.is_empty() {
                 return Err(ConfigError::EmptyDevice { pin: pin.clone() });
             }
@@ -582,6 +585,18 @@ socket = "/tmp/gpiojsonsvc.sock"
                 assert_eq!(max, GPIO_CONSUMER_MAX_LEN);
             }
             other => panic!("unexpected error: {other}"),
+        }
+    }
+    #[test]
+    fn rejects_reserved_pin_names() {
+        for name in ["A|B", "lag"] {
+            let toml = format!(
+                "[service]\nsocket = '/tmp/test.sock'\n[pins.gpiod]\n'{name}' = {{ device = '/dev/gpiochip0', line = 0 }}"
+            );
+            assert!(matches!(
+                ServiceConfig::from_toml_str(&toml),
+                Err(ConfigError::InvalidPinKey(_))
+            ));
         }
     }
 }

@@ -41,13 +41,20 @@ flowchart LR
 
 `src/_archived/` is leftover from an earlier design and is not linked into the binary.
 
+Protocol `init` and `set` objects deserialize into `protocol::common::ArrayMap`, a
+contiguous `Vec<(K, V)>` representation. These payloads are iteration-only after
+parsing, so the type preserves wire order and rejects duplicate JSON keys without
+paying for tree lookup and mutation APIs that the session path does not use.
+
 ## Pin resolution
 
-1. Protocol `pin` is looked up with `SessionConfig::resolve_gpiod_pin` (exact string).
+1. Protocol parsing converts each init expression key into `PinSelector::Single` or `PinSelector::Combined`. Combined names use an inline `SmallVec` capacity of eight; larger init groups spill to the heap. Each component is looked up with `SessionConfig::resolve_gpiod_pin` (exact string), and parameters are applied separately to each pin. Duplicate physical locations anywhere in init are rejected.
 2. The mapped `device` is grouped in session-local `ChipIndices`. The first time a path appears it gets the next `chip_index`; later pins on the same path reuse it.
 3. Mapped `line` becomes `ResolvedPin.offset`.
 4. `backend.open_chip(device)` runs once per distinct device. In mock mode `device` is the XML path; later it will be the real device path.
-5. Get/set/event routing uses `{chip_index, offset}` only. Combined targets pack bits in selector order (first pin is MSB).
+5. `CompiledPins` stores one `CompiledPin { mode, pin: ResolvedPin }` per initialized configuration key. Init group expressions are not retained.
+6. Get/set use plain pin-name strings resolved directly against that per-pin registry. Each pin is checked for access mode; set values must be 0 or 1. Get collects one value per requested name without bit packing. Set maps reject duplicate keys while parsing. Per-chip batches retain the existing GPIO execution path. Different chips are applied sequentially, without cross-chip atomicity.
+7. Init `initial` and `final` values are single bits broadcast to each pin. Final writes are compiled per pin and retained for graceful close.
 
 The XML `id` is stored as chip metadata and is not a protocol pin key.
 
@@ -62,9 +69,9 @@ States: `Connected` → `Initialized` (or `SetSequenceRunning`) → `Closing` / 
 
 After a successful `init`, the reactor:
 
-- holds compiled targets and opened chips
+- holds the compiled pin registry and opened chips
 - watches request fds for chips that have trigger lines
-- on edge events, maps `(chip_index, offset)` to the trigger target name and writes `status: event`
+- on edge events, maps `(chip_index, offset)` to the configured trigger pin name and writes `status: event`
 
 Immediate `set` compiles a write batch and applies it, then replies `ok`. Stepped `set` compiles every step first, applies step 0 immediately, sleeps until each remaining accumulated lag, and replies `ok` after the last step is applied. Disconnect aborts watchers, applies any compiled output `final` values, then drops the initialized session.
 

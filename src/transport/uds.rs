@@ -181,7 +181,7 @@ mod tests {
         let mut connection = UdsConnection::from_stream(server_stream);
 
         client_stream
-            .write_all(b"{\"id\":\"init-1\",\"action\":\"init\",\"target\":{}}\n")
+            .write_all(b"{\"id\":\"init-1\",\"action\":\"init\",\"target\":{\"A\":{\"mode\":\"input\"}}}\n")
             .await
             .expect("write request line");
 
@@ -192,7 +192,9 @@ mod tests {
             .expect("parse request");
         assert_eq!(inbound.id, "init-1");
         match inbound.payload {
-            RequestPayload::Init { target } => assert!(target.is_empty()),
+            RequestPayload::Init { target } => {
+                assert_eq!(target.iter().next().unwrap().0.to_string(), "A")
+            }
             other => panic!("expected init payload, got {other:?}"),
         }
 

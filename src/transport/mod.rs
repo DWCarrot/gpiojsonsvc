@@ -111,10 +111,11 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use crate::gpio::mock::MockBackend;
+    use crate::protocol::common::ArrayMap;
+    use crate::protocol::request::PinConfigRequest;
     use crate::protocol::request::PinSelector;
     use crate::protocol::request::RequestMessage;
     use crate::protocol::request::RequestPayload;
-    use crate::protocol::request::TargetConfigRequest;
     use crate::protocol::response::ResponseMessage;
     use crate::session::SessionConfig;
     use crate::session::SessionReactor;
@@ -190,25 +191,24 @@ mod tests {
         }
     }
 
-    fn sample_init_targets() -> BTreeMap<String, TargetConfigRequest> {
-        BTreeMap::from([
+    fn sample_init_targets() -> ArrayMap<PinSelector, PinConfigRequest> {
+        [
             (
-                "IN".to_owned(),
-                TargetConfigRequest::Input {
-                    pin: PinSelector::Single("gpiochip0:0".to_owned()),
-                    bias: None,
-                },
+                "gpiochip0:0".to_owned(),
+                PinConfigRequest::Input { bias: None },
             ),
             (
-                "OUT".to_owned(),
-                TargetConfigRequest::Output {
-                    pin: PinSelector::Single("gpiochip0:1".to_owned()),
+                "gpiochip0:1".to_owned(),
+                PinConfigRequest::Output {
                     drive: None,
                     initial_value: None,
                     final_value: None,
                 },
             ),
-        ])
+        ]
+        .into_iter()
+        .map(|(name, config)| (PinSelector::parse(name).unwrap(), config))
+        .collect()
     }
 
     fn write_chip_file(contents: &str) -> NamedTempFile {

@@ -36,12 +36,46 @@ def canned_request_id(explicit_id: str | None, allocator: RequestIdAllocator) ->
     return allocator.next_id()
 
 
+def parse_pin_expression(expression: str) -> list[str]:
+    if not isinstance(expression, str):
+        raise ValueError("pin expression must be a string")
+    pins = expression.split("|")
+    if any(not pin or pin == "lag" for pin in pins):
+        raise ValueError("pin names must be non-empty and cannot be lag")
+    if len(set(pins)) != len(pins):
+        raise ValueError("duplicate pin in expression")
+    return pins
+
+
+def validate_pin_name(name: str) -> None:
+    if not isinstance(name, str) or not name or "|" in name or name == "lag":
+        raise ValueError("pin name must be non-empty and cannot contain | or be lag")
+
+
 def build_init_request(
     target: dict[str, Any],
     request_id: str,
 ) -> dict[str, Any]:
     if not target:
-        raise ValueError("init target must contain at least one named target")
+        raise ValueError("init target must contain at least one pin")
+    seen: set[str] = set()
+    for expression, config in target.items():
+        pins = parse_pin_expression(expression)
+        if seen.intersection(pins):
+            raise ValueError("pin appears in more than one init entry")
+        seen.update(pins)
+        if not isinstance(config, dict) or config.get("mode") not in _INPUT_MODES:
+            raise ValueError("init requires a mode for each pin group")
+        allowed = {
+            "input": {"mode", "bias"},
+            "output": {"mode", "drive", "initial", "final"},
+            "trigger": {"mode", "edge"},
+        }[config["mode"]]
+        if config.keys() - allowed:
+            raise ValueError("unknown init fields; legacy pin bindings are no longer supported")
+        for field in ("initial", "final"):
+            if field in config and (type(config[field]) is not int or config[field] not in (0, 1)):
+                raise ValueError(f"{field} must be 0 or 1 for each pin")
     return {
         "id": request_id,
         "action": "init",
@@ -51,7 +85,6 @@ def build_init_request(
 
 def build_target_config(
     mode: str,
-    pin: str | list[str],
     *,
     bias: str | None = None,
     drive: str | None = None,
@@ -59,7 +92,7 @@ def build_target_config(
     initial: int | None = None,
     final: int | None = None,
 ) -> dict[str, Any]:
-    config: dict[str, Any] = {"mode": mode, "pin": pin}
+    config: dict[str, Any] = {"mode": mode}
     if mode == "input" and bias is not None:
         config["bias"] = bias
     if mode == "output" and drive is not None:
@@ -77,6 +110,9 @@ def build_get_request(
     target: str | list[str],
     request_id: str,
 ) -> dict[str, Any]:
+    expressions = target if isinstance(target, list) else [target]
+    for expression in expressions:
+        validate_pin_name(expression)
     if isinstance(target, list):
         if not target:
             raise ValueError("get target list must not be empty")
@@ -97,6 +133,29 @@ def build_set_request(
 ) -> dict[str, Any]:
     if not target:
         raise ValueError("set target must not be empty")
+    steps = target if isinstance(target, list) else [target]
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise ValueError("set step must be an object")
+        writes = {
+            key: value for key, value in step.items()
+            if not (isinstance(target, list) and key == "lag")
+        }
+        if not writes:
+            raise ValueError("set step must contain at least one pin value")
+        if isinstance(target, list):
+            lag = step.get("lag", 0)
+            if (
+                type(lag) is not int
+                or not 0 <= lag <= 0xFFFFFFFF
+                or (index == 0 and lag != 0)
+                or (index > 0 and lag == 0)
+            ):
+                raise ValueError("step 0 requires no delay; later steps require a positive u32 lag")
+        for expression, value in writes.items():
+            validate_pin_name(expression)
+            if type(value) is not int or value not in (0, 1):
+                raise ValueError(f"value for {expression} must be 0 or 1")
     return {
         "id": request_id,
         "action": "set",
@@ -119,7 +178,7 @@ Readline = Callable[[str], str]
 
 def _interactive_help() -> None:
     print("Interactive requests (one field at a time, or raw JSON):")
-    print("  init      configure named targets")
+    print("  init      configure pins")
     print("  get       read target values")
     print("  set       write immediate or stepped values")
     print("  raw       paste a request object (multi-line, end with an empty line)")
@@ -168,19 +227,10 @@ def _parse_space_split(raw: str) -> str | list[str]:
     return tokens
 
 
-def _prompt_pin(readline: Readline, mode: str) -> str | list[str]:
-    while True:
-        raw = _prompt_line(readline, "pin (space-split): ", required=True)
-        pin = _parse_space_split(raw)
-        if mode == "trigger" and isinstance(pin, list):
-            raise ValueError("trigger must be a single pin")
-        return pin
-
-
 def _prompt_name_value_pairs(readline: Readline) -> dict[str, int]:
     pairs: dict[str, int] = {}
     while True:
-        name = _prompt_line(readline, "target name: ", required=not pairs)
+        name = _prompt_line(readline, "pin name: ", required=not pairs)
         if not name:
             return pairs
         while True:
@@ -207,7 +257,7 @@ def _prompt_lag_ms(readline: Readline) -> int:
         return lag
 
 
-def _prompt_optional_u8(readline: Readline, prompt: str) -> int | None:
+def _prompt_optional_bit(readline: Readline, prompt: str) -> int | None:
     while True:
         raw = _prompt_line(readline, prompt)
         if not raw:
@@ -215,10 +265,10 @@ def _prompt_optional_u8(readline: Readline, prompt: str) -> int | None:
         try:
             value = int(raw)
         except ValueError:
-            print("value must be an integer 0-255")
+            print("value must be 0 or 1")
             continue
-        if value < 0 or value > 255:
-            print("value must be an integer 0-255")
+        if value not in (0, 1):
+            print("value must be 0 or 1")
             continue
         return value
 
@@ -262,12 +312,14 @@ def _build_raw_interactively(request_id: str, readline: Readline) -> dict[str, A
 def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, Any]:
     target: dict[str, Any] = {}
     while True:
-        name = _prompt_line(readline, "target name: ", required=not target)
+        name = _prompt_line(readline, "pin expression (A|B): ", required=not target)
         if not name:
             break
         mode = _prompt_choice(readline, "mode [input/output/trigger]: ", _INPUT_MODES)
         assert mode is not None
-        pin = _prompt_pin(readline, mode)
+        parse_pin_expression(name)
+        if name in target:
+            raise ValueError("duplicate init expression")
         bias = drive = edge = None
         initial = final = None
         if mode == "input":
@@ -284,8 +336,8 @@ def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, 
                 _OUTPUT_DRIVES,
                 allow_empty=True,
             )
-            initial = _prompt_optional_u8(readline, "initial [0-255, empty=omit]: ")
-            final = _prompt_optional_u8(readline, "final [0-255, empty=omit]: ")
+            initial = _prompt_optional_bit(readline, "initial [0/1 per pin, empty=omit]: ")
+            final = _prompt_optional_bit(readline, "final [0/1 per pin, empty=omit]: ")
         else:
             edge = _prompt_choice(
                 readline,
@@ -295,20 +347,19 @@ def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, 
             )
         target[name] = build_target_config(
             mode,
-            pin,
             bias=bias,
             drive=drive,
             edge=edge,
             initial=initial,
             final=final,
         )
-        if not _prompt_yes(readline, "add another target? [y/N]: "):
+        if not _prompt_yes(readline, "add another pin group? [y/N]: "):
             break
     return build_init_request(target, request_id)
 
 
 def _build_get_interactively(request_id: str, readline: Readline) -> dict[str, Any]:
-    raw = _prompt_line(readline, "target (space-split names): ", required=True)
+    raw = _prompt_line(readline, "pin names (space-separated): ", required=True)
     return build_get_request(_parse_space_split(raw), request_id)
 
 
@@ -592,13 +643,13 @@ def parse_json_array(raw: str, context: str) -> list[Any]:
     return value
 
 
-def parse_pin_selector(args: argparse.Namespace) -> str | list[str]:
+def parse_pin_selector(args: argparse.Namespace) -> str:
     if args.pin and args.pins:
         raise SystemExit("use either --pin or --pins, not both")
     if args.pin:
         return args.pin
     if args.pins:
-        return list(args.pins)
+        return "|".join(args.pins)
     raise SystemExit("init requires --pin, --pins, or --target-json")
 
 
@@ -606,21 +657,20 @@ def build_init_from_args(args: argparse.Namespace) -> dict[str, Any]:
     request_id = canned_request_id(args.request_id, args.id_allocator)
 
     if args.target_json:
-        if args.name or args.mode or args.pin or args.pins:
-            raise SystemExit("use either --target-json or --name/--mode/--pin, not both")
+        if args.mode or args.pin or args.pins:
+            raise SystemExit("use either --target-json or --mode/--pin, not both")
         target = parse_json_object(args.target_json, "init target")
         try:
             return build_init_request(target, request_id)
         except ValueError as error:
             raise SystemExit(str(error)) from error
 
-    if not args.name or not args.mode:
-        raise SystemExit("init requires --target-json, or --name and --mode with --pin/--pins")
+    if not args.mode:
+        raise SystemExit("init requires --target-json, or --mode with --pin/--pins")
 
     pin = parse_pin_selector(args)
     config = build_target_config(
         args.mode,
-        pin,
         bias=args.bias,
         drive=args.drive,
         edge=args.edge,
@@ -628,7 +678,7 @@ def build_init_from_args(args: argparse.Namespace) -> dict[str, Any]:
         final=args.final,
     )
     try:
-        return build_init_request({args.name: config}, request_id)
+        return build_init_request({pin: config}, request_id)
     except ValueError as error:
         raise SystemExit(str(error)) from error
 
@@ -812,22 +862,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-json",
         help="JSON object for the init target field",
     )
-    init_parser.add_argument("--name", help="Single logical target name")
     init_parser.add_argument(
         "--mode",
         choices=("input", "output", "trigger"),
-        help="Mode for a single --name target",
+        help="Mode shared by the selected pins",
     )
-    init_parser.add_argument("--pin", help="Single physical pin string")
+    init_parser.add_argument("--pin", help="Configured pin name or quoted expression, e.g. A|B")
     init_parser.add_argument(
         "--pins",
         nargs="+",
-        help="Combined physical pin list (input/output)",
+        help="Configured pin names sharing init parameters",
     )
     init_parser.add_argument("--bias", help="Optional input bias (as_is, disabled, pull_up, pull_down)")
     init_parser.add_argument("--drive", help="Optional output drive (push_pull, open_drain, open_source)")
-    init_parser.add_argument("--initial", type=int, help="Optional packed output initial value")
-    init_parser.add_argument("--final", type=int, help="Optional packed output final value")
+    init_parser.add_argument("--initial", type=int, help="Optional initial value (0 or 1) applied to every pin")
+    init_parser.add_argument("--final", type=int, help="Optional final value (0 or 1) applied to every pin")
     init_parser.add_argument("--edge", help="Optional trigger edge (rising, falling, both)")
     init_parser.set_defaults(
         build_payload=build_init_from_args,
@@ -843,7 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         nargs="+",
         required=True,
-        help="One or more logical target names",
+        help="One or more pin names",
     )
     get_parser.set_defaults(
         build_payload=build_get_from_args,
@@ -855,7 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build and send a set request",
     )
     add_request_id_argument(set_parser)
-    set_parser.add_argument("--target", help="Single output target name")
+    set_parser.add_argument("--target", help="Output pin name")
     set_parser.add_argument(
         "--value",
         type=int,
@@ -863,7 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_parser.add_argument(
         "--target-json",
-        help="JSON object of immediate target-to-value pairs",
+        help="JSON object of immediate pin-name-to-value pairs",
     )
     set_parser.add_argument(
         "--steps-json",

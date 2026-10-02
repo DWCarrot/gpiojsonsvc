@@ -837,7 +837,7 @@ socket = "{socket}"
             .expect("connect");
         client
             .write_all(
-                br#"{"id":"init-1","action":"init","target":{"OUT":{"mode":"output","pin":"gpiochip0:7"}}}"#,
+                br#"{"id":"init-1","action":"init","target":{"gpiochip0:7": { "mode": "output"}}}"#,
             )
             .await
             .expect("write init");

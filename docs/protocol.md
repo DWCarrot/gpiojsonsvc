@@ -1,189 +1,130 @@
 # Protocol Reference
 
-The service listens on a Unix domain socket (`SOCK_STREAM`). Each request and response is one JSON object on a single line. The server frames with newline (`\n`). Clients may send `\n` or `\r\n`; the debug client writes `\r\n`. How to use `tools/debug_client.py`: [debug_client.md](debug_client.md).
+The service listens on a Unix domain socket (`SOCK_STREAM`). Each request and response is one JSON object on a single line. The server frames with `\n`; clients may send `\n` or `\r\n`. Every request requires a non-empty string `id` and an `action`. Responses reuse the request ID; unsolicited trigger events reuse the successful `init` ID.
 
-Every request must include a non-empty string `id`. Responses reuse that `id`, except trigger `event` messages, which reuse the successful `init` request `id`.
+## Pin expressions
 
-Protocol `pin` values are opaque strings. The service does not parse chip names, separators, board labels, or case. A pin is valid only when it matches a `[pins.gpiod]` key exactly.
+The `target` field addresses configured pin names directly. There are no user-defined target bindings. In `init` only, `A|B|C` shares parameters across three pins. Each component must exactly match a `[pins.gpiod]` key: no trimming, case folding, or inference of chip/line from its spelling. `|` is reserved as a separator; configuration keys containing it and the exact key `lag` are rejected. `lag` is reserved for stepped-write timing.
 
-## Requests
+Empty components (`A||B`, `|A`, `A|`) and repeated pins within an expression are invalid. Physical locations are identified by configured `(device, line)`; aliases resolving to the same location cannot be initialized together.
 
-### `init`
+Init sharing creates no lasting group. Get and set accept only individual pin names; `|` is rejected. Each value is 0 or 1.
 
-Configures the logical targets for this connection. It must be the first successful request. A second `init` on the same connection returns an error.
+## `init`
+
+Must succeed once per connection before `get` or `set`. A second successful initialization on the same connection is rejected. `target` is a non-empty map from pin expression to parameters:
 
 ```json
 {
   "id": "init-1",
   "action": "init",
   "target": {
-    "GPIO4_B3": {
-      "mode": "input",
-      "pin": "gpiochip0:2",
-      "bias": "as_is"
-    },
-    "CombinedIN": {
-      "mode": "input",
-      "pin": ["gpiochip0:3", "gpiochip1:4", "gpiochip1:5"],
-      "bias": "pull_up"
-    },
-    "GPIO4_B5": {
+    "GPIO4_B3|GPIO4_B2": {
       "mode": "output",
-      "pin": "gpiochip2:1",
       "drive": "push_pull",
-      "initial": 1,
+      "initial": 0,
       "final": 0
     },
-    "CombinedOUT": {
-      "mode": "output",
-      "pin": ["gpiochip2:2", "gpiochip2:3"],
-      "initial": 2,
-      "final": 1
-    },
-    "GPIO1_A2": {
-      "mode": "trigger",
-      "pin": "gpiochip1:1",
-      "edge": "rising"
-    }
+    "GPIO3_C3": { "mode": "output", "drive": "open_drain" },
+    "GPIO1_A0|GPIO1_A1": { "mode": "input", "bias": "pull_up" },
+    "GPIO1_A2|GPIO1_A3": { "mode": "trigger", "edge": "both" }
   }
 }
 ```
 
-`target` is a map from logical name to a tagged object with `mode`.
+Supported parameters:
 
-| Mode | `pin` | Optional fields |
-| --- | --- | --- |
-| `input` | string, or array of 1–8 strings | `bias`: `as_is`, `disabled`, `pull_up`, `pull_down` |
-| `output` | string, or array of 1–8 strings | `drive`: `push_pull`, `open_drain`, `open_source`; `initial` / `final`: optional packed `u8` |
-| `trigger` | single non-empty string only | `edge`: `rising` (default), `falling`, `both` |
+- `input`: optional `bias` (`as_is`, `disabled`, `pull_up`, `pull_down`).
+- `output`: optional `drive` (`push_pull`, `open_drain`, `open_source`); optional `initial` and `final`, each an integer **0 or 1 applied to every pin in the entry**.
+- `trigger`: optional `edge` (`rising`, the default; `falling`; `both`). Each pin produces its own events.
 
-Rules:
+There is no eight-pin limit on init groups. Each pin/physical location may appear only once across the entire init request, even when repeated entries would use the same parameters. Duplicate JSON init keys are also rejected. Unmapped pins, unavailable devices, and missing lines fail initialization. Devices are opened once per distinct configured path within the session.
 
-- Pin strings must be non-empty.
-- Combined lists must be non-empty and at most eight entries.
-- Combined pins that resolve to the same physical `(device, line)` are rejected as a duplicate physical location.
-- Unmapped pin strings, missing device files, and missing lines are rejected at `init`.
-- Distinct configured `device` paths are opened once each; pins that share a device share that chip.
-- There is no protocol `default` on outputs and no `filter` on triggers.
-- Output `initial` and `final` are optional packed `u8` values with the same bit order and out-of-range rules as `set` (`>= 2^n` is rejected for width `n`).
-- Omitting `initial` does not override the line's existing value when the output is requested.
-- Omitting `final` means that target is not written during close.
+Omitting `initial` leaves the existing line value unchanged when requested. Omitting `final` skips a close write for that pin. To assign different initial/final values, use separate init entries. Address each pin individually in subsequent get/set requests.
 
-Combined packing: array index 0 is the most significant bit of a `u8`. For `["A","B","C"]`, bit 2 is `A` and bit 0 is `C`.
+Graceful close applies configured final values, then releases GPIO. This runs for disconnect, explicit session shutdown, service shutdown, command-channel closure, and response-write failure. A failed final write is logged and teardown continues; there is no close reply. Init validation is performed before requesting lines, but backend failures across multiple chips do not provide transactional rollback of initial writes.
 
-Graceful close applies every configured `final` value, then releases GPIO. That path runs for client disconnect, explicit session shutdown, service shutdown, command-channel closure, and response-write failure. A failed final write is logged and teardown continues; there is no close reply.
+Unknown init parameters, including the removed `pin` field, are rejected. There is no protocol `default` on outputs or `filter` on triggers.
 
-### `get`
+## `get`
 
-Reads one or more readable targets (`input` or `trigger`). Output targets are not readable.
+Reads initialized `input` and `trigger` pins. A request may read both modes. Output pins are not readable.
 
 ```json
-{ "id": "get-1", "action": "get", "target": "GPIO4_B3" }
+{"id":"get-1","action":"get","target":"GPIO1_A1"}
+{"id":"get-2","action":"get","target":["GPIO1_A0","GPIO1_A2"]}
 ```
+
+A string returns one value (0 or 1). A non-empty array of pin names returns an array of values in request order, including for a one-element array. Repeated names return a value at each requested position. There is no eight-pin limit.
+
+All referenced pins must have been initialized on this connection, even if they exist in the service configuration. Init grouping does not affect reads.
+
+## `set`
+
+Writes initialized output pins. Each entry accepts only the integer 0 or 1.
 
 ```json
-{ "id": "get-2", "action": "get", "target": ["GPIO4_B3", "CombinedIN"] }
+{"id":"set-1","action":"set","target":{"GPIO4_B3":1,"GPIO3_C3":0,"GPIO4_B2":1}}
 ```
 
-`target` is a non-empty string or a non-empty array of non-empty strings. Unknown names fail.
+Here `GPIO4_B3=1`, `GPIO3_C3=0`, and `GPIO4_B2=1`. Each pin retains its initialization settings.
 
-A single-target reply is one `u8`. A multi-target reply is an array of `u8` in request order. Combined targets pack bits the same way as `init`.
-
-### `set`
-
-Writes output targets. Values are `u8`; a target of width `n` (n < 8) rejects values `>= 2^n`. Combined outputs apply the packed value to all constituent lines in one batch.
-
-Immediate form — object of target name to value:
+Stepped writes use a non-empty array:
 
 ```json
 {
-  "id": "set-1",
-  "action": "set",
-  "target": {
-    "GPIO4_B5": 1,
-    "CombinedOUT": 5
-  }
-}
-```
-
-Stepped form — non-empty array of objects. Each object is a map of target names to values, plus `lag` in milliseconds:
-
-```json
-{
-  "id": "set-2",
-  "action": "set",
-  "target": [
-    { "GPIO4_B5": 1 },
-    { "lag": 100, "GPIO4_B5": 0 },
-    { "lag": 200, "GPIO4_B5": 1 }
+  "id":"set-2",
+  "action":"set",
+  "target":[
+    {"GPIO4_B3":1,"GPIO3_C3":0},
+    {"lag":100,"GPIO3_C3":0,"GPIO4_B2":1},
+    {"lag":200,"GPIO4_B3":0}
   ]
 }
 ```
 
 Rules:
 
-- Step 0 must not include `lag` (or must use lag `0`).
-- Later steps must include a non-zero `lag`. The delay is relative to the previous step.
-- Each step must contain at least one target value.
-- All steps are compiled before any GPIO write. If compilation fails, nothing is written.
-- All steps are applied in order. Step 0 runs immediately; remaining steps wait for their `lag` in the session reactor. The service replies `ok` after the last step is applied. A later-step apply failure replies `error` instead.
-- A second `set` while a sequence is running returns `a set request is already in progress`. `get` remains allowed.
-- Disconnect cancels an in-progress sequence. Remaining steps are not applied and the `set` reply is not sent. Configured output `final` values are still applied during close.
+- Immediate maps and each step must contain at least one pin value.
+- Step 0 omits `lag` or uses zero. Later steps require a positive `u32` `lag` in milliseconds, relative to the previous step.
+- Duplicate pin keys within an immediate map or a step are rejected. Pins may be written again in later steps.
+- Every step is validated and compiled before step 0 executes. Later steps can address different pins.
+- Writes are batched per chip. Multiple chips are applied sequentially; there is no atomicity or rollback guarantee across chips. A backend apply failure can leave earlier chip writes applied.
+- The `ok` reply follows the last applied step. An apply failure produces an `error` reply.
+- A second `set` while a sequence is running returns `a set request is already in progress`; `get` remains allowed.
+- Disconnect cancels remaining steps without a set reply; configured per-pin final values are still applied.
 
 ## Responses
 
-### `ok`
+Successful init or set:
 
 ```json
-{ "id": "init-1", "status": "ok" }
+{"id":"init-1","status":"ok"}
 ```
 
-Used for successful `init` and `set`.
-
-### `pin_value`
+Get results:
 
 ```json
-{ "id": "get-1", "status": "pin_value", "value": 1 }
+{"id":"get-1","status":"pin_value","value":1}
+{"id":"get-2","status":"pin_value","value":[0,1]}
 ```
+
+Session errors use a string field:
 
 ```json
-{ "id": "get-2", "status": "pin_value", "value": [1, 5] }
+{"id":"get-1","status":"error","error":"pin `GPIO1_A0` is not initialized"}
 ```
 
-### `error`
+Other errors include uninitialized/already initialized/closed sessions, unreadable/unwritable pins, unmapped pins, duplicate physical locations, unavailable devices. Malformed JSON, invalid init expressions, combined get/set names, set values other than 0 or 1, invalid init parameters, empty IDs, and unknown actions fail at the transport/protocol layer rather than returning a session `error` status.
 
-The `error` field is a string, not a structured code object.
+Events identify the individual configured pin, even when triggers were initialized together:
 
 ```json
-{ "id": "get-1", "status": "error", "error": "session is not initialized" }
+{"id":"init-1","status":"event","event":{"target":"GPIO1_A2","type":"rising"}}
 ```
 
-Examples of session error text:
+`event.type` is `rising` or `falling`, never `both`. There is no protocol debounce or software filter.
 
-- `session is not initialized` / `session is already initialized` / `session is closed`
-- `a set request is already in progress`
-- `unknown target \`NAME\``
-- `target \`NAME\` is not readable` / `is not writable`
-- `target \`NAME\` value N exceeds W configured bits`
-- `output target \`NAME\` initial value N exceeds W configured bits`
-- `output target \`NAME\` final value N exceeds W configured bits`
-- `unmapped pin \`PIN\``
-- `device file \`PATH\` is unavailable`
-- `line N is not available on device \`PATH\``
-- `pin \`PIN\` maps to a duplicate physical location`
+## Migrating from named targets
 
-Malformed JSON, empty `id`, or unknown `action` fail at the transport/protocol layer rather than as an `error` status object.
-
-### `event`
-
-Unsolicited. `id` is the `init` request id. `event.type` is `rising` or `falling` (never `both`; a `both` trigger emits the edge that occurred).
-
-```json
-{
-  "id": "init-1",
-  "status": "event",
-  "event": { "target": "GPIO1_A2", "type": "rising" }
-}
-```
-
-There is no protocol-level debounce or software filter. Kernel/mock edge detection follows the `edge` set at `init`.
+Replace `"LED":{"mode":"output","pin":"GPIO1_B5"}` with `"GPIO1_B5":{"mode":"output"}` and address `GPIO1_B5` directly thereafter. For init sharing, replace pin arrays with `|`-separated keys. Replace combined get targets with arrays of individual names, and expand packed set values into separate per-pin entries. Packed initial/final values must be expanded into separate per-pin entries when bits differ; grouped initial/final values now broadcast one bit. Remove debug-client `--name` arguments. Legacy bindings are not accepted.
