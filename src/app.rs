@@ -507,7 +507,7 @@ mod tests {
 socket = "{socket}"
 
 [pins.gpiod]
-"gpiochip0:7" = {{ device = "{device}", line = {line} }}
+"gpiochip0:7" = {{ id = {line}, device = "{device}", line = {line} }}
 "#
         );
         fs::write(&path, contents).expect("write config");

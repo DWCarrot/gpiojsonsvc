@@ -57,9 +57,9 @@ impl Harness {
 socket = "{socket}"
 
 [pins.gpiod]
-"gpiochip0:0" = {{ device = "{chip0}", line = 0 }}
-"gpiochip0:7" = {{ device = "{chip0}", line = 7 }}
-"GPIO1_B5" = {{ device = "{chip1}", line = 13 }}
+"gpiochip0:0" = {{ id = 0, device = "{chip0}", line = 0 }}
+"gpiochip0:7" = {{ id = 7, device = "{chip0}", line = 7 }}
+"GPIO1_B5" = {{ id = 26, device = "{chip1}", line = 13 }}
 "##,
                 socket = socket.display(),
                 chip0 = chip0.display(),
@@ -191,7 +191,7 @@ fn write_minimal_config(dir: &TempDir) -> PathBuf {
 socket = "{socket}"
 
 [pins.gpiod]
-"gpiochip0:7" = {{ device = "{xml}", line = 7 }}
+"gpiochip0:7" = {{ id = 7, device = "{xml}", line = 7 }}
 "##,
             socket = socket.display(),
             xml = xml.display(),
@@ -314,7 +314,7 @@ async fn cli_mock_with_log_path_records_writes() {
 socket = "{socket}"
 
 [pins.gpiod]
-"gpiochip0:7" = {{ device = "{xml}", line = 7 }}
+"gpiochip0:7" = {{ id = 7, device = "{xml}", line = 7 }}
 "##,
             socket = socket.display(),
             xml = xml.display(),

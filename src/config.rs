@@ -21,9 +21,10 @@ pub const DEFAULT_GPIO_CONSUMER: &str = "svc_{id}";
 /// Maximum length of the configured `service.gpio-consumer` string (not the rendered result).
 pub const GPIO_CONSUMER_MAX_LEN: usize = 12;
 
-/// libgpiod location for one protocol pin string: device path plus line offset.
+/// Pin identity and libgpiod location for one exact protocol pin string.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct GPIODPinSpec {
+    pub id: u32,
     pub device: String,
     pub line: u32,
 }
@@ -267,8 +268,8 @@ mod tests {
 socket = "/tmp/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"gpiochip0:7" = { device = "/path/to/gpiochip0.xml", line = 7 }
-"GPIO1_B5" = { device = "/path/to/gpiochip1.xml", line = 13 }
+"gpiochip0:7" = { id = 7, device = "/path/to/gpiochip0.xml", line = 7 }
+"GPIO1_B5" = { id = 26, device = "/path/to/gpiochip1.xml", line = 13 }
 "#;
 
     fn pins_toml(gpio_consumer: Option<&str>) -> String {
@@ -282,7 +283,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = "/tmp/gpiojsonsvc.sock"
 {consumer}
 [pins.gpiod]
-"gpiochip0:7" = {{ device = "/path/to/gpiochip0.xml", line = 7 }}
+"gpiochip0:7" = {{ id = 7, device = "/path/to/gpiochip0.xml", line = 7 }}
 "#
         )
     }
@@ -293,6 +294,7 @@ socket = "/tmp/gpiojsonsvc.sock"
         assert_eq!(
             config.resolve_gpiod_pin("gpiochip0:7"),
             Some(&GPIODPinSpec {
+                id: 7,
                 device: "/path/to/gpiochip0.xml".to_owned(),
                 line: 7,
             })
@@ -300,6 +302,7 @@ socket = "/tmp/gpiojsonsvc.sock"
         assert_eq!(
             config.resolve_gpiod_pin("GPIO1_B5"),
             Some(&GPIODPinSpec {
+                id: 26,
                 device: "/path/to/gpiochip1.xml".to_owned(),
                 line: 13,
             })
@@ -311,6 +314,66 @@ socket = "/tmp/gpiojsonsvc.sock"
         let config = ServiceConfig::from_toml_str(SAMPLE).expect("sample config");
         assert_sample(&config);
         assert_eq!(config.gpiod_pins().len(), 2);
+    }
+
+    #[test]
+    fn preserves_explicit_pin_id_independently_of_pin_name_and_location() {
+        for id in [0, 139, u32::MAX] {
+            let toml = SAMPLE.replace("id = 26", &format!("id = {id}"));
+            let config = ServiceConfig::from_toml_str(&toml).expect("explicit pin id");
+            let pin = config.resolve_gpiod_pin("GPIO1_B5").expect("pin");
+            assert_eq!(pin.id, id);
+            assert_eq!(pin.device, "/path/to/gpiochip1.xml");
+            assert_eq!(pin.line, 13);
+        }
+    }
+
+    #[test]
+    fn rejects_missing_pin_id() {
+        let toml = SAMPLE.replace("id = 26, ", "");
+        let error = ServiceConfig::from_toml_str(&toml).expect_err("missing pin id");
+        match error {
+            ConfigError::Parse { source, .. } => {
+                assert!(source.to_string().contains("missing field `id`"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn rejects_non_u32_pin_ids() {
+        for value in ["-1", "4294967296", "1.5", "\"45\"", "true"] {
+            let toml = SAMPLE.replace("id = 26", &format!("id = {value}"));
+            let error =
+                ServiceConfig::from_toml_str(&toml).expect_err(&format!("invalid pin id {value}"));
+            assert!(matches!(error, ConfigError::Parse { .. }));
+        }
+    }
+
+    #[test]
+    fn rock5b_sample_pin_ids_match_board_gpio_indices() {
+        let config = ServiceConfig::from_toml_str(include_str!("../assets/rock5b/config.toml"))
+            .expect("Rock5B sample config");
+        let board: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/rock5b/gpio.json"))
+                .expect("Rock5B GPIO data");
+        let mut checked = 0;
+        for (index, entry) in board.as_object().expect("header pins") {
+            for function in entry["function"].as_array().expect("pin functions") {
+                if function["type"] != "gpio" {
+                    continue;
+                }
+                let name = function["name"].as_str().expect("GPIO name");
+                let pin = config.resolve_gpiod_pin(name).expect("mapped GPIO");
+                assert_eq!(
+                    pin.id,
+                    index.parse::<u32>().expect("GPIO index"),
+                    "pin {name}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, config.gpiod_pins().len());
     }
 
     #[test]
@@ -336,8 +399,8 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = "/run/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"gpiochip0:7" = { device = "/dev/gpiochip0", line = 7 }
-"GPIO1_B5" = { device = "/dev/gpiochip0", line = 13 }
+"gpiochip0:7" = { id = 7, device = "/dev/gpiochip0", line = 7 }
+"GPIO1_B5" = { id = 26, device = "/dev/gpiochip0", line = 13 }
 "#;
         let config = ServiceConfig::from_toml_str(toml).expect("shared device");
         let first = config.resolve_gpiod_pin("gpiochip0:7").expect("first pin");
@@ -367,7 +430,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = "/tmp/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"" = { device = "/dev/gpiochip0", line = 0 }
+"" = { id = 0, device = "/dev/gpiochip0", line = 0 }
 "#;
         let error = ServiceConfig::from_toml_str(toml).expect_err("empty key");
         assert!(matches!(error, ConfigError::EmptyPinKey));
@@ -380,7 +443,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = "/tmp/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"GPIO1_B5" = { device = "", line = 13 }
+"GPIO1_B5" = { id = 26, device = "", line = 13 }
 "#;
         let error = ServiceConfig::from_toml_str(toml).expect_err("empty device");
         match error {
@@ -396,7 +459,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = ""
 
 [pins.gpiod]
-"GPIO1_B5" = { device = "/dev/gpiochip0", line = 13 }
+"GPIO1_B5" = { id = 26, device = "/dev/gpiochip0", line = 13 }
 "#;
         let error = ServiceConfig::from_toml_str(toml).expect_err("empty socket");
         assert!(matches!(error, ConfigError::EmptySocket));
@@ -409,7 +472,7 @@ socket = ""
 socket = "/tmp/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"GPIO1_B5" = { line = 13 }
+"GPIO1_B5" = { id = 26, line = 13 }
 "#;
         let error = ServiceConfig::from_toml_str(toml).expect_err("missing device");
         assert!(matches!(error, ConfigError::Parse { .. }));
@@ -422,7 +485,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = "/tmp/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"GPIO1_B5" = { device = "/dev/gpiochip0" }
+"GPIO1_B5" = { id = 26, device = "/dev/gpiochip0" }
 "#;
         let error = ServiceConfig::from_toml_str(toml).expect_err("missing line");
         assert!(matches!(error, ConfigError::Parse { .. }));
@@ -435,7 +498,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 socket = "/tmp/gpiojsonsvc.sock"
 
 [pins.gpiod]
-"GPIO1_B5" = { device = "/dev/gpiochip0", line = -1 }
+"GPIO1_B5" = { id = 26, device = "/dev/gpiochip0", line = -1 }
 "#;
         let error = ServiceConfig::from_toml_str(toml).expect_err("negative line");
         assert!(matches!(error, ConfigError::Parse { .. }));
@@ -591,7 +654,7 @@ socket = "/tmp/gpiojsonsvc.sock"
     fn rejects_reserved_pin_names() {
         for name in ["A|B", "lag"] {
             let toml = format!(
-                "[service]\nsocket = '/tmp/test.sock'\n[pins.gpiod]\n'{name}' = {{ device = '/dev/gpiochip0', line = 0 }}"
+                "[service]\nsocket = '/tmp/test.sock'\n[pins.gpiod]\n'{name}' = {{ id = 0, device = '/dev/gpiochip0', line = 0 }}"
             );
             assert!(matches!(
                 ServiceConfig::from_toml_str(&toml),

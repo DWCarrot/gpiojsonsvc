@@ -325,6 +325,7 @@ mod tests {
                 (
                     (*pin).to_owned(),
                     GPIODPinSpec {
+                        id: *line,
                         device: path.to_owned(),
                         line: *line,
                     },
@@ -494,7 +495,7 @@ socket = "/tmp/gpiojsonsvc.sock"
 gpio-consumer = "app_{id}"
 
 [pins.gpiod]
-"gpiochip0:0" = { device = "/dev/gpiochip0", line = 0 }
+"gpiochip0:0" = { id = 0, device = "/dev/gpiochip0", line = 0 }
 "#,
         )
         .expect("config");

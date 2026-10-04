@@ -6,7 +6,7 @@ The service is layered so the JSON protocol and session rules can run on a PC wi
 flowchart LR
     pinString["Opaque pin string"] --> exactLookup["Exact [pins.gpiod] lookup"]
     configFile["TOML config"] --> exactLookup
-    exactLookup --> location["GPIODPinSpec: device + line"]
+    exactLookup --> location["GPIODPinSpec: id + device + line"]
     location --> deviceGroup["Group by device path"]
     deviceGroup --> mockSelect["Mock: open one-chip XML"]
     deviceGroup --> realOpen["Future: open device path"]
@@ -20,7 +20,7 @@ flowchart LR
 ## Process bootstrap
 
 - `src/main.rs` parses CLI (`--mock` and an optional config path), loads TOML, starts a multi-thread Tokio runtime, and calls `app::run`.
-- `src/config.rs` discovers the file (positional path, then `GPIOJSONSVC_CONFIG`, then `gpiojsonsvc.toml`) and validates socket plus `[pins.gpiod]`.
+- `src/config.rs` discovers the file (positional path, then `GPIOJSONSVC_CONFIG`, then `gpiojsonsvc.toml`) and validates socket plus `[pins.gpiod]`. Each pin stores a required `u32` resource `id` equal to the GPIO index (the integer pin key in the board's `gpio.json`), for future occupation checks across features such as I2C. Current resolution and conflict checks still use `(device, line)`.
 - `src/app.rs` selects the backend. `--mock` constructs `MockBackend`; `GPIOJSONSVC_MOCK_LOG` also enables the XML write log. It then validates every mapped XML path and line and binds the Unix socket. Without `--mock`, it returns `real backend unavailable; use --mock` and does not bind.
 - Stale socket files are removed before bind. A signal task translates SIGINT/SIGTERM into `SystemEvent::SHUTDOWN`; the listener and live sessions all stop on that event, and `BoundSocket` removes the socket path.
 

@@ -897,6 +897,7 @@ mod tests {
             (
                 "gpiochip0:0".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 0,
                     device: path.clone(),
                     line: 0,
                 },
@@ -904,6 +905,7 @@ mod tests {
             (
                 "gpiochip0:1".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 1,
                     device: path.clone(),
                     line: 1,
                 },
@@ -911,6 +913,7 @@ mod tests {
             (
                 "gpiochip0:2".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 2,
                     device: path.clone(),
                     line: 2,
                 },
@@ -918,6 +921,7 @@ mod tests {
             (
                 "gpiochip0:3".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 3,
                     device: path,
                     line: 3,
                 },
@@ -1519,6 +1523,7 @@ mod tests {
             (
                 "gpiochip0:0".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 0,
                     device: path.clone(),
                     line: 0,
                 },
@@ -1526,6 +1531,7 @@ mod tests {
             (
                 "gpiochip0:2".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 2,
                     device: path,
                     line: 2,
                 },
@@ -1559,6 +1565,7 @@ mod tests {
             (
                 "gpiochip0:2".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 2,
                     device: path.clone(),
                     line: 2,
                 },
@@ -1566,6 +1573,7 @@ mod tests {
             (
                 "gpiochip0:3".to_owned(),
                 crate::config::GPIODPinSpec {
+                    id: 3,
                     device: path,
                     line: 3,
                 },

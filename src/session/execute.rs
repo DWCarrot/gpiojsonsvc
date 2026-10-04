@@ -202,6 +202,7 @@ mod tests {
                 (
                     (*pin).to_owned(),
                     GPIODPinSpec {
+                        id: *line,
                         device: path.to_owned(),
                         line: *line,
                     },

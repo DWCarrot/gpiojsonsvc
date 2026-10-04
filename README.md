@@ -30,14 +30,15 @@ socket = "/tmp/gpiojsonsvc.sock"
 gpio-consumer = "svc_{id}"
 
 [pins.gpiod]
-"gpiochip0:7" = { device = "/path/to/gpiochip0.xml", line = 7 }
-"GPIO1_B5" = { device = "/path/to/gpiochip1.xml", line = 13 }
+"gpiochip0:7" = { id = 7, device = "/path/to/gpiochip0.xml", line = 7 }
+"GPIO1_B5" = { id = 26, device = "/path/to/gpiochip1.xml", line = 13 }
 ```
 
 Rules:
 
 - Pin keys are matched exactly (no case folding, trimming, or `chip:line` parsing).
-- Keys and `device` strings must be non-empty; `line` must be a `u32`.
+- Each mapping requires `id`, `device`, and `line`. Keys and `device` strings must be non-empty; `id` and `line` must be `u32` integers (0–4294967295).
+- `id` is an explicit GPIO index: the integer value of the pin's key in the board's `gpio.json` (the physical header-pin index for Rock5B). It is reserved for future occupation checks across features such as I2C. It is stored without affecting current device/line resolution or conflict checks. It is never inferred from the pin key, device path, or line offset; existing configurations must add it. This pin ID is separate from the session ID used in `service.gpio-consumer`.
 - Pin keys cannot contain `|` or equal `lag`; these are reserved by the protocol.
 - At least one mapping is required.
 - Several pin strings may share one `device` and different `line` values.
