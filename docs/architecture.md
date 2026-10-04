@@ -48,7 +48,7 @@ paying for tree lookup and mutation APIs that the session path does not use.
 
 ## Pin resolution
 
-1. Protocol parsing converts each init expression key into `PinSelector::Single` or `PinSelector::Combined`. Combined names use an inline `SmallVec` capacity of eight; larger init groups spill to the heap. Each component is looked up with `SessionConfig::resolve_gpiod_pin` (exact string), and parameters are applied separately to each pin. Duplicate physical locations anywhere in init are rejected.
+1. Protocol parsing converts each init expression key into a `PinSelector` storing the original string and pin end offsets in a `SmallVec<[usize; 8]>`. Up to eight pins keep their offsets inline; larger init groups spill the offsets to the heap. Its `parse`, `len`, `iter`, and `is_single` methods validate expressions and expose borrowed pin names without allocating per-pin strings. Each component is looked up with `SessionConfig::resolve_gpiod_pin` (exact string), and parameters are applied separately to each pin. Duplicate physical locations anywhere in init are rejected.
 2. The mapped `device` is grouped in session-local `ChipIndices`. The first time a path appears it gets the next `chip_index`; later pins on the same path reuse it.
 3. Mapped `line` becomes `ResolvedPin.offset`.
 4. `backend.open_chip(device)` runs once per distinct device. In mock mode `device` is the XML path; later it will be the real device path.

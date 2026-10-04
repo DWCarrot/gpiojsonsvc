@@ -39,51 +39,58 @@ pub enum RequestPayload {
 
 /// One configured pin name or an ordered `|`-separated pin combination.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PinSelector {
-    Single(String),
-    Combined(SmallVec<[String; 8]>),
+pub struct PinSelector {
+    expression: String,
+    /// Exclusive byte end offsets for each pin, including the final pin.
+    split_indices: SmallVec<[usize; 8]>,
 }
 
 impl PinSelector {
     pub fn parse(expression: String) -> Result<Self, String> {
-        if !expression.contains('|') {
-            validate_pin_name(&expression)?;
-            return Ok(Self::Single(expression));
-        }
-
-        let mut pins = SmallVec::new();
+        let mut split_indices = SmallVec::new();
+        let mut start = 0;
         for pin in expression.split('|') {
             validate_pin_name(pin)?;
-            if pins.iter().any(|existing: &String| existing == pin) {
-                return Err(format!("duplicate pin `{pin}` in expression"));
+            let mut previous_start = 0;
+            for &end in &split_indices {
+                if &expression[previous_start..end] == pin {
+                    return Err(format!("duplicate pin `{pin}` in expression"));
+                }
+                previous_start = end + 1;
             }
-            pins.push(pin.to_owned());
+            let end = start + pin.len();
+            split_indices.push(end);
+            start = end + 1;
         }
-        Ok(Self::Combined(pins))
+        Ok(Self {
+            expression,
+            split_indices,
+        })
     }
 
     pub fn len(&self) -> usize {
-        match self {
-            Self::Single(_) => 1,
-            Self::Combined(pins) => pins.len(),
-        }
+        self.split_indices.len()
     }
 
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &str> {
-        let pins: &[String] = match self {
-            Self::Single(pin) => std::slice::from_ref(pin),
-            Self::Combined(pins) => pins.as_slice(),
-        };
-        pins.iter().map(String::as_str)
+        self.split_indices.iter().enumerate().map(|(index, &end)| {
+            let start = if index == 0 {
+                0
+            } else {
+                self.split_indices[index - 1] + 1
+            };
+            &self.expression[start..end]
+        })
+    }
+
+    pub fn is_single(&self) -> bool {
+        self.len() == 1
     }
 }
 
 impl fmt::Display for PinSelector {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Single(pin) => formatter.write_str(pin),
-            Self::Combined(pins) => formatter.write_str(&pins.join("|")),
-        }
+        formatter.write_str(&self.expression)
     }
 }
 
@@ -92,7 +99,7 @@ impl Serialize for PinSelector {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(&self.expression)
     }
 }
 
@@ -365,26 +372,62 @@ impl PinConfigRequest {
 
 #[cfg(test)]
 mod tests {
-    use smallvec::smallvec;
-
     use super::PinSelector;
 
     #[test]
     fn parses_single_and_combined_pin_selectors() {
-        assert_eq!(
-            PinSelector::parse("GPIO4_B3".to_owned()).unwrap(),
-            PinSelector::Single("GPIO4_B3".to_owned())
-        );
-        assert_eq!(
-            PinSelector::parse("GPIO4_B3|GPIO4_B2".to_owned()).unwrap(),
-            PinSelector::Combined(smallvec!["GPIO4_B3".to_owned(), "GPIO4_B2".to_owned(),])
-        );
+        for (expression, pins) in [
+            ("GPIO4_B3", vec!["GPIO4_B3"]),
+            ("GPIO4_B3|GPIO4_B2", vec!["GPIO4_B3", "GPIO4_B2"]),
+            ("引脚甲| 引脚乙", vec!["引脚甲", " 引脚乙"]),
+        ] {
+            let selector = PinSelector::parse(expression.to_owned()).unwrap();
+            assert_eq!(selector.len(), pins.len());
+            assert_eq!(selector.is_single(), pins.len() == 1);
+            assert_eq!(selector.iter().len(), pins.len());
+            assert_eq!(selector.iter().collect::<Vec<_>>(), pins);
+            assert_eq!(selector.to_string(), expression);
+            let json = serde_json::to_string(&selector).unwrap();
+            assert_eq!(json, serde_json::to_string(expression).unwrap());
+            assert_eq!(
+                serde_json::from_str::<PinSelector>(&json).unwrap(),
+                selector
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_pin_selectors() {
+        for expression in [
+            "",
+            "|A",
+            "A|",
+            "A||B",
+            "A|A",
+            "A|B|A",
+            "lag",
+            "A|lag",
+            "甲|乙|甲",
+        ] {
+            assert!(
+                PinSelector::parse(expression.to_owned()).is_err(),
+                "{expression}"
+            );
+        }
     }
 
     #[test]
     fn combined_selector_can_grow_beyond_inline_capacity_for_init() {
+        let inline = PinSelector::parse("A|B|C|D|E|F|G|H".to_owned()).unwrap();
+        assert!(!inline.split_indices.spilled());
         let selector = PinSelector::parse("A|B|C|D|E|F|G|H|I".to_owned()).unwrap();
+        assert!(selector.split_indices.spilled());
         assert_eq!(selector.len(), 9);
+        assert!(!selector.is_single());
+        assert_eq!(
+            selector.iter().collect::<Vec<_>>(),
+            ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+        );
         assert_eq!(selector.to_string(), "A|B|C|D|E|F|G|H|I");
     }
 }
