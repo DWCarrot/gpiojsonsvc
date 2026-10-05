@@ -33,8 +33,26 @@ pub enum RequestPayload {
     },
     #[serde(rename = "get")]
     Get { target: TargetSelector },
+    #[serde(rename = "query")]
+    Query {
+        target: String,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_query_pin",
+            skip_serializing_if = "Option::is_none"
+        )]
+        pin: Option<TargetSelector>,
+    },
     #[serde(rename = "set")]
     Set { target: SetRequest },
+}
+
+/// Absence selects all pins; an explicit null is not a pin selector.
+fn deserialize_query_pin<'de, D>(deserializer: D) -> Result<Option<TargetSelector>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    TargetSelector::deserialize(deserializer).map(Some)
 }
 
 /// One configured pin name or an ordered `|`-separated pin combination.

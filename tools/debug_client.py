@@ -106,6 +106,27 @@ def build_target_config(
     return config
 
 
+def build_query_request(
+    target: str,
+    request_id: str,
+    pin: str | list[str] | None = None,
+) -> dict[str, Any]:
+    if target != "gpio":
+        raise ValueError("query target must be gpio")
+    payload: dict[str, Any] = {
+        "id": request_id,
+        "action": "query",
+        "target": target,
+    }
+    if pin is not None:
+        if not isinstance(pin, (str, list)) or not pin:
+            raise ValueError("query pin must be a name or non-empty list of names")
+        for name in pin if isinstance(pin, list) else [pin]:
+            validate_pin_name(name)
+        payload["pin"] = pin
+    return payload
+
+
 def build_get_request(
     target: str | list[str],
     request_id: str,
@@ -179,6 +200,7 @@ Readline = Callable[[str], str]
 def _interactive_help() -> None:
     print("Interactive requests (one field at a time, or raw JSON):")
     print("  init      configure pins")
+    print("  query     inspect GPIO metadata (init is not required)")
     print("  get       read target values")
     print("  set       write immediate or stepped values")
     print("  raw       paste a request object (multi-line, end with an empty line)")
@@ -295,8 +317,8 @@ def _read_multiline_json(readline: Readline) -> Any:
 def _build_raw_request(request_id: str, parsed: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("raw JSON must be a request object")
-    if parsed.get("action") not in ("init", "get", "set"):
-        raise ValueError("raw JSON action must be init, get, or set")
+    if parsed.get("action") not in ("init", "get", "set", "query"):
+        raise ValueError("raw JSON action must be init, get, set, or query")
 
     payload = dict(parsed)
     req_id = payload.get("id")
@@ -358,6 +380,14 @@ def _build_init_interactively(request_id: str, readline: Readline) -> dict[str, 
     return build_init_request(target, request_id)
 
 
+def _build_query_interactively(request_id: str, readline: Readline) -> dict[str, Any]:
+    target = _prompt_choice(
+        readline, "target [gpio, empty=gpio]: ", ("gpio",), allow_empty=True
+    ) or "gpio"
+    raw = _prompt_line(readline, "pin names (space-separated, empty=all): ")
+    return build_query_request(target, request_id, _parse_space_split(raw) if raw else None)
+
+
 def _build_get_interactively(request_id: str, readline: Readline) -> dict[str, Any]:
     raw = _prompt_line(readline, "pin names (space-separated): ", required=True)
     return build_get_request(_parse_space_split(raw), request_id)
@@ -382,7 +412,7 @@ def build_request_interactively(
     request_id: str,
     readline: Readline | None = None,
 ) -> dict[str, Any]:
-    """Walk protocol fields and return one init/get/set request.
+    """Walk protocol fields and return one init/get/set/query request.
 
     ``readline`` defaults to :func:`input`. Empty optional fields are omitted.
     Invalid actions and validation errors print and return to the action prompt.
@@ -396,7 +426,7 @@ def build_request_interactively(
     while True:
         action = _prompt_line(
             readline,
-            "action [init/get/set/raw, help/quit]: ",
+            "action [init/query/get/set/raw, help/quit]: ",
         ).lower()
         if not action:
             continue
@@ -406,8 +436,8 @@ def build_request_interactively(
             _interactive_help()
             continue
 
-        if action not in ("init", "get", "set", "raw"):
-            print("expected init, get, set, raw, help, or quit")
+        if action not in ("init", "get", "set", "query", "raw"):
+            print("expected init, query, get, set, raw, help, or quit")
             continue
 
         try:
@@ -415,6 +445,8 @@ def build_request_interactively(
                 return _build_raw_interactively(request_id, readline)
             if action == "init":
                 return _build_init_interactively(request_id, readline)
+            if action == "query":
+                return _build_query_interactively(request_id, readline)
             if action == "get":
                 return _build_get_interactively(request_id, readline)
             return _build_set_interactively(request_id, readline)
@@ -683,6 +715,20 @@ def build_init_from_args(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit(str(error)) from error
 
 
+def build_query_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    pin = args.pin
+    if pin is not None and len(pin) == 1:
+        pin = pin[0]
+    try:
+        return build_query_request(
+            args.target,
+            canned_request_id(args.request_id, args.id_allocator),
+            pin,
+        )
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+
 def build_get_from_args(args: argparse.Namespace) -> dict[str, Any]:
     request_id = canned_request_id(args.request_id, args.id_allocator)
     try:
@@ -880,6 +926,20 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--edge", help="Optional trigger edge (rising, falling, both)")
     init_parser.set_defaults(
         build_payload=build_init_from_args,
+        handler=lambda args: run_single_request(args, args.build_payload(args)),
+    )
+
+    query_parser = subparsers.add_parser(
+        "query",
+        help="Inspect GPIO metadata without initializing pins",
+    )
+    add_request_id_argument(query_parser)
+    query_parser.add_argument("--target", choices=("gpio",), default="gpio")
+    query_parser.add_argument(
+        "--pin", action="append", help="Configured pin name (repeat for multiple; omit for all)"
+    )
+    query_parser.set_defaults(
+        build_payload=build_query_from_args,
         handler=lambda args: run_single_request(args, args.build_payload(args)),
     )
 

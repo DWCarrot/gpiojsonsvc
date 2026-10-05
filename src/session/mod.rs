@@ -7,6 +7,7 @@ mod command;
 mod compiled;
 mod execute;
 mod initialized;
+mod query;
 mod reactor;
 mod sequence;
 mod state;

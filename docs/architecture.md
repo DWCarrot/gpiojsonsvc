@@ -32,7 +32,7 @@ flowchart LR
 | --- | --- |
 | `src/protocol/` | Request/response types, line parse/serialize |
 | `src/transport/` | Unix `SOCK_STREAM`, `LinesCodec`, reader task |
-| `src/session/` | Per-connection reactor, `init` compilation, get/set batches, sequences, events |
+| `src/session/` | Per-connection reactor, `init` compilation, query collection, get/set batches, sequences, events |
 | `src/gpio/libgpiod.rs` | Trait surface modeled on libgpiod v2 |
 | `src/gpio/mock/` | One XML file per chip, watchers, persistence |
 | `src/gpio/sys.rs` | Stub for the real FFI backend |
@@ -75,9 +75,35 @@ After a successful `init`, the reactor:
 
 Immediate `set` compiles a write batch and applies it, then replies `ok`. Stepped `set` compiles every step first, applies step 0 immediately, sleeps until each remaining accumulated lag, and replies `ok` after the last step is applied. Disconnect aborts watchers, applies any compiled output `final` values, then drops the initialized session.
 
+## Query collection
+
+`src/session/query.rs` reads the full pin map through `SessionConfig::gpiod_pins`.
+For `query` with `target: "gpio"`, an absent `pin` selects all configuration keys;
+a string/array selects exact names. Resolve the entire selection before GPIO I/O
+and collapse repeated names. Open each selected device once and obtain one fresh
+`Chip::get_line_info` snapshot per distinct `(device, line)`. Selected aliases
+retain their individual configuration IDs while sharing observed metadata.
+
+Query is independent of initialization and never requests lines or modifies the
+compiled session registry, watchers, or pending set sequence. It returns one
+typed `query_result` with a lexically ordered `pins` map, or one contextual error.
+Collection is synchronous like existing GPIO operations; it and response writes
+can delay the same reactor's timer handling. The aggregate snapshot is not atomic
+and does not reserve free pins. Successful get replies use `get_result` with the
+existing scalar/array value payload.
+
 ## Mock backend
 
-`MockBackend::open_chip` loads one `<gpiochip>` document, keeps process-wide state keyed by file path, and persists line levels back to that file. Watchers observe file changes and line-request edge configuration. Multiple sessions that open the same XML path share that chip’s mock state; two different paths are independent chips. XML grammar: [mock_chip.md](mock_chip.md).
+`MockBackend::open_chip` caches one `MockChip` per exact device path under a
+synchronized registry shared by backend clones. The first open loads the XML
+and starts one polling watcher; subsequent opens reuse that state and watcher.
+Multiple service sessions therefore observe the same active request registry,
+usage/consumer metadata, and exclusive line ownership. Independent backend
+instances and different paths remain isolated. Requests release ownership when
+dropped; cached snapshots/watchers remain until backend/handles are dropped.
+Query reads this state without XML writes or write-log entries. External edits
+update input levels through polling, not cached metadata/structure. XML grammar:
+[mock_chip.md](mock_chip.md).
 
 The mock is always compiled in. Gating it behind a Cargo feature is a later build/deployment change.
 

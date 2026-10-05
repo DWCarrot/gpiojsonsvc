@@ -60,6 +60,22 @@ Logical `Active` / `Inactive` follow `active_low`:
 
 Protocol `get` / `set` and trigger events use the logical value. The file always stores `H` / `L`.
 
+## Query metadata and ownership
+
+Within one backend, repeated opens and backend clones share chip state and one
+polling watcher by the exact configured device path. Independent backend
+instances remain isolated. Active requests determine `is_used` and `consumer`,
+including requests from other service sessions. Dropping a request releases its
+ownership. A consumer attribute stored in XML does not by itself mark a line
+used; a free line reports a null consumer.
+
+Query returns the effective input/output direction and does not request lines,
+rewrite XML, or append write-log entries. Chip snapshots and watchers remain
+cached until the backend and outstanding chip handles are dropped. The mock
+does not simulate kernel or external-process reservations. External file edits
+only update input levels through polling; metadata and structure are not merged
+into a cached chip snapshot. To change those fixtures, restart the mock service.
+
 ## Persistence and external edits
 
 Output `set` and line-request property changes rewrite the XML on disk. `GPIOJSONSVC_MOCK_LOG` appends those snapshots to a separate log; it is not this chip file.

@@ -4,7 +4,7 @@ The service listens on a Unix domain socket (`SOCK_STREAM`). Each request and re
 
 ## Pin expressions
 
-The `target` field addresses configured pin names directly. There are no user-defined target bindings. In `init` only, `A|B|C` shares parameters across three pins. Each component must exactly match a `[pins.gpiod]` key: no trimming, case folding, or inference of chip/line from its spelling. `|` is reserved as a separator; configuration keys containing it and the exact key `lag` are rejected. `lag` is reserved for stepped-write timing.
+For `init`, `get`, and `set`, the `target` field addresses configured pin names directly. For `query`, `target` selects a subsystem (`gpio`) and the optional `pin` field selects configured names. There are no user-defined target bindings. In `init` only, `A|B|C` shares parameters across three pins. Each component must exactly match a `[pins.gpiod]` key: no trimming, case folding, or inference of chip/line from its spelling. `|` is reserved as a separator; configuration keys containing it and the exact key `lag` are rejected. `lag` is reserved for stepped-write timing.
 
 Empty components (`A||B`, `|A`, `A|`) and repeated pins within an expression are invalid. Physical locations are identified by configured `(device, line)`; aliases resolving to the same location cannot be initialized together.
 
@@ -45,6 +45,54 @@ Omitting `initial` leaves the existing line value unchanged when requested. Omit
 Graceful close applies configured final values, then releases GPIO. This runs for disconnect, explicit session shutdown, service shutdown, command-channel closure, and response-write failure. A failed final write is logged and teardown continues; there is no close reply. Init validation is performed before requesting lines, but backend failures across multiple chips do not provide transactional rollback of initial writes.
 
 Unknown init parameters, including the removed `pin` field, are rejected. There is no protocol `default` on outputs or `filter` on triggers.
+
+## `query`
+
+Inspect configured GPIO line metadata without initializing or requesting lines:
+
+```json
+{"id":"query-1","action":"query","target":"gpio"}
+{"id":"query-2","action":"query","target":"gpio","pin":"GPIO1_A0"}
+{"id":"query-3","action":"query","target":"gpio","pin":["GPIO1_A0","GPIO1_B5"]}
+```
+
+Only `target: "gpio"` is supported. Omit `pin` to return all `[pins.gpiod]` keys;
+otherwise supply one exact name or a non-empty array. Query is allowed before
+and after `init` and during a stepped set, including for configured pins that
+this connection has not initialized. It does not change session state or cancel
+the pending set. Result keys are sorted lexically; duplicate requested names
+collapse to one entry. A single selection still returns a map.
+
+```json
+{
+  "id":"query-2",
+  "status":"query_result",
+  "target":"gpio",
+  "pins":{
+    "GPIO1_A0":{"id":11,"is_used":false,"consumer":null,"direction":"input"}
+  }
+}
+```
+
+Each entry contains the configured GPIO `id` and a fresh line-info snapshot:
+`is_used` reports any consumer, including the caller's own requests;
+`consumer` is the reported label or null; `direction` is `input` or `output`
+(a trigger is input). Labels do not prove ownership. Selected aliases for one
+configured `(device, line)` share one snapshot but retain their own GPIO IDs.
+The response has no line values and is not an atomic snapshot across lines.
+An unused line can become occupied before a later init.
+
+Any unknown pin or selected device/line inspection failure produces one
+correlated string `error` response, with no partial result. Unsupported targets
+also return an error. These errors leave the connection usable. Unselected
+devices are not opened for a filtered query; configuration startup checks still
+apply to every mapped pin. Missing/non-string target, null/empty filters,
+non-string array entries, `|` expressions, and reserved names are protocol
+errors and close the connection through the existing transport error path.
+
+In mock mode, usage and consumer come from active requests in the shared
+backend, rather than persisted XML consumer attributes. See
+[mock_chip.md](mock_chip.md) for snapshot limitations.
 
 ## `get`
 
@@ -105,8 +153,8 @@ Successful init or set:
 Get results:
 
 ```json
-{"id":"get-1","status":"pin_value","value":1}
-{"id":"get-2","status":"pin_value","value":[0,1]}
+{"id":"get-1","status":"get_result","value":1}
+{"id":"get-2","status":"get_result","value":[0,1]}
 ```
 
 Session errors use a string field:
@@ -124,6 +172,13 @@ Events identify the individual configured pin, even when triggers were initializ
 ```
 
 `event.type` is `rising` or `falling`, never `both`. There is no protocol debounce or software filter.
+
+## Get response status migration
+
+Successful get replies now use `status: "get_result"` instead of `pin_value`.
+Update clients that inspect the status. The `value` field, scalar/array rules,
+and request format are unchanged; the old response status is not accepted by
+the Rust response decoder.
 
 ## Migrating from named targets
 

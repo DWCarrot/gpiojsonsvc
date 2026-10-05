@@ -13,8 +13,10 @@ mod snapshot;
 mod state;
 mod watcher;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub use chip::MockChip;
@@ -51,6 +53,7 @@ pub(crate) use log::parse_write_log_blocks;
 pub struct MockBackend {
     poll_interval: Duration,
     write_log: Option<Arc<XmlWriteLog>>,
+    chips: Arc<Mutex<BTreeMap<String, MockChip>>>,
 }
 
 impl MockBackend {
@@ -59,6 +62,7 @@ impl MockBackend {
         Self {
             poll_interval: Duration::from_millis(250),
             write_log: None,
+            chips: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -67,6 +71,7 @@ impl MockBackend {
         Self {
             poll_interval: interval.max(Duration::from_millis(1)),
             write_log: None,
+            chips: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 

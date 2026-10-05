@@ -45,6 +45,7 @@ use super::execute::compile_get_batch;
 use super::execute::compile_set_batch;
 use super::initialized::InitializedSession;
 use super::initialized::SessionConfig;
+use super::query::collect_gpio_info;
 use super::sequence::PendingSetSequence;
 use super::state::SessionError;
 use super::state::SessionState;
@@ -291,8 +292,37 @@ where
         match payload {
             RequestPayload::Init { target } => self.handle_init(id, &target).await,
             RequestPayload::Get { target } => self.handle_get(id, &target).await,
+            RequestPayload::Query { target, pin } => {
+                self.handle_query(id, &target, pin.as_ref()).await
+            }
             RequestPayload::Set { target } => self.handle_set(id, &target).await,
         }
+    }
+
+    async fn handle_query(
+        &mut self,
+        request_id: String,
+        target: &str,
+        pin: Option<&TargetSelector>,
+    ) -> Result<(), W::Error> {
+        if matches!(self.state, SessionState::Closing | SessionState::Closed) {
+            return self
+                .reply(SessionError::Closed.into_response(request_id))
+                .await;
+        }
+        if target != "gpio" {
+            return self
+                .reply(ResponseMessage::error(
+                    request_id,
+                    format!("query target `{target}` is not supported"),
+                ))
+                .await;
+        }
+        let response = match collect_gpio_info(self.backend.as_ref(), self.config.as_ref(), pin) {
+            Ok(result) => ResponseMessage::query_result(request_id, result),
+            Err(error) => error.into_response(request_id),
+        };
+        self.reply(response).await
     }
 
     async fn handle_init(
@@ -351,7 +381,7 @@ where
             session.chip_count(),
         ) {
             Ok(batch) => match apply_get_batch(session, &batch, GetResultSize::from(target)) {
-                Ok(payload) => ResponseMessage::pin_value(request_id, payload),
+                Ok(payload) => ResponseMessage::get_result(request_id, payload),
                 Err(error) => error.into_response(request_id),
             },
             Err(error) => error.into_response(request_id),
@@ -990,6 +1020,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn query_during_set_sequence_does_not_change_sequence_or_state() {
+        let chip_file = write_chip_file(SAMPLE_XML);
+        let (handle, mut responses, join) = spawn_reactor(&chip_file);
+        init_ok(&handle, &mut responses, sample_init_targets()).await;
+        send_request(
+            &handle,
+            RequestMessage {
+                id: "set-running".into(),
+                payload: RequestPayload::Set {
+                    target: SetRequest::Steps(vec![
+                        SetStepRequest {
+                            lag: 0,
+                            target: [("gpiochip0:2".into(), 1)].into_iter().collect(),
+                        },
+                        SetStepRequest {
+                            lag: 150,
+                            target: [("gpiochip0:2".into(), 0)].into_iter().collect(),
+                        },
+                    ]),
+                },
+            },
+        )
+        .await;
+        send_request(
+            &handle,
+            RequestMessage {
+                id: "query-running".into(),
+                payload: RequestPayload::Query {
+                    target: "gpio".into(),
+                    pin: None,
+                },
+            },
+        )
+        .await;
+        let result = recv_response(&mut responses).await;
+        assert_eq!(result.id, "query-running");
+        let ResponseStatus::QueryResult(crate::protocol::response::QueryResultPayload::Gpio {
+            pins,
+        }) = result.status
+        else {
+            panic!("expected query result")
+        };
+        assert_eq!(pins.len(), 4);
+        assert!(pins["gpiochip0:2"].is_used);
+        assert!(!pins["gpiochip0:3"].is_used);
+        assert_eq!(
+            recv_response(&mut responses).await,
+            ResponseMessage::ok("set-running")
+        );
+        assert_eq!(persisted_line(&chip_file, 2), LineLevel::Low);
+        send_request(
+            &handle,
+            RequestMessage {
+                id: "get-after-query".into(),
+                payload: RequestPayload::Get {
+                    target: TargetSelector::Single("gpiochip0:0".into()),
+                },
+            },
+        )
+        .await;
+        assert_eq!(
+            recv_response(&mut responses).await,
+            ResponseMessage::get_result("get-after-query", PinValuePayload::Value(0))
+        );
+        handle.shutdown();
+        join.await.unwrap();
+    }
+
     fn line0_xml(level: &str) -> String {
         format!(
             r#"<gpiochip id="gpiochip0" label="mock gpiochip0">
@@ -1081,7 +1180,7 @@ mod tests {
         let get_response = recv_response(&mut responses).await;
         assert_eq!(
             get_response,
-            ResponseMessage::pin_value("get-1", PinValuePayload::Value(0))
+            ResponseMessage::get_result("get-1", PinValuePayload::Value(0))
         );
 
         send_request(
@@ -1167,7 +1266,7 @@ mod tests {
         .await;
         assert_eq!(
             recv_response(&mut responses).await,
-            ResponseMessage::pin_value("get-1", PinValuePayload::Value(0))
+            ResponseMessage::get_result("get-1", PinValuePayload::Value(0))
         );
 
         handle

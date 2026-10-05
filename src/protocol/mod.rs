@@ -42,7 +42,7 @@ pub fn parse_request_line(line: &str) -> Result<request::RequestMessage, Protoco
     }
 
     match envelope.action.as_str() {
-        "init" | "get" | "set" => {
+        "init" | "get" | "set" | "query" => {
             let request = serde_json::from_str::<request::RequestMessage>(line)
                 .map_err(|error| ProtocolError::InvalidJson(error.to_string()))?;
             validate_request(&request)?;
@@ -78,6 +78,13 @@ fn validate_request(request: &request::RequestMessage) -> Result<(), ProtocolErr
                 request::validate_pin_name(selector).map_err(ProtocolError::Validation)?;
             }
         }
+        RequestPayload::Query { pin, .. } => {
+            if let Some(pin) = pin {
+                for name in pin.as_slice() {
+                    request::validate_pin_name(name).map_err(ProtocolError::Validation)?;
+                }
+            }
+        }
         RequestPayload::Set { target } => match target {
             request::SetRequest::Immediate(writes) => {
                 for (name, value) in writes {
@@ -109,6 +116,103 @@ mod tests {
     use super::response::PinValuePayload;
     use super::response::ResponseMessage;
     use super::serialize_response;
+
+    #[test]
+    fn query_requests_round_trip_all_single_and_multiple_selection() {
+        for value in [
+            serde_json::json!({"id":"q", "action":"query", "target":"gpio"}),
+            serde_json::json!({"id":"q", "action":"query", "target":"gpio", "pin":" opaque "}),
+            serde_json::json!({"id":"q", "action":"query", "target":"gpio", "pin":["B", "A", "B"]}),
+            serde_json::json!({"id":"q", "action":"query", "target":"i2c"}),
+        ] {
+            let request = parse_request_line(&value.to_string()).unwrap();
+            assert!(matches!(request.payload, RequestPayload::Query { .. }));
+            assert_eq!(serde_json::to_value(request).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn query_rejects_invalid_filters_and_envelopes() {
+        for pin in [
+            serde_json::json!(null),
+            serde_json::json!(""),
+            serde_json::json!([]),
+            serde_json::json!(["A", 1]),
+            serde_json::json!(["A", ""]),
+            serde_json::json!({"A":true}),
+            serde_json::json!(false),
+            serde_json::json!("A|B"),
+            serde_json::json!("lag"),
+        ] {
+            let value = serde_json::json!({"id":"q", "action":"query", "target":"gpio", "pin":pin});
+            assert!(parse_request_line(&value.to_string()).is_err(), "{value}");
+        }
+        for value in [
+            serde_json::json!({"id":"q", "action":"query"}),
+            serde_json::json!({"id":"q", "action":"query", "target":null}),
+            serde_json::json!({"id":"q", "action":"query", "target":["gpio"]}),
+            serde_json::json!({"id":" ", "action":"query", "target":"gpio"}),
+        ] {
+            assert!(parse_request_line(&value.to_string()).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn query_and_get_results_round_trip_with_distinct_schemas() {
+        use super::response::QueryResultPayload;
+        let query = serde_json::json!({
+            "id":"q", "status":"query_result", "target":"gpio", "pins":{
+                "A":{"id":26, "is_used":false, "consumer":null, "direction":"input"},
+                "B":{"id":27, "is_used":true, "consumer":"svc_1", "direction":"output"}
+            }
+        });
+        let payload = serde_json::from_value::<QueryResultPayload>(serde_json::json!({
+            "target":"gpio", "pins":query["pins"]
+        }))
+        .unwrap();
+        let response = ResponseMessage::query_result("q", payload);
+        assert_eq!(serde_json::to_value(&response).unwrap(), query);
+        assert_eq!(
+            serde_json::from_value::<ResponseMessage>(query).unwrap(),
+            response
+        );
+        for value in [
+            PinValuePayload::Value(1),
+            PinValuePayload::Values(vec![0, 1]),
+            PinValuePayload::Values(vec![1]),
+        ] {
+            let response = ResponseMessage::get_result("g", value);
+            let json = serde_json::to_value(&response).unwrap();
+            assert_eq!(json["status"], "get_result");
+            assert_eq!(
+                serde_json::from_value::<ResponseMessage>(json).unwrap(),
+                response
+            );
+        }
+        assert!(
+            serde_json::from_value::<ResponseMessage>(
+                serde_json::json!({"id":"g", "status":"pin_value", "value":1})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn response_envelopes_continue_rejecting_unknown_fields() {
+        for mut response in [
+            serde_json::json!({"id":"r", "status":"ok"}),
+            serde_json::json!({"id":"r", "status":"error", "error":"failed"}),
+            serde_json::json!({"id":"r", "status":"event", "event":{"target":"A", "type":"rising"}}),
+            serde_json::json!({"id":"r", "status":"get_result", "value":1}),
+            serde_json::json!({"id":"r", "status":"query_result", "target":"gpio", "pins":{}}),
+        ] {
+            response["unexpected"] = serde_json::json!(true);
+            assert!(
+                serde_json::from_value::<ResponseMessage>(response.clone()).is_err(),
+                "{response}"
+            );
+        }
+    }
 
     /// Requests must be a single logical line (`parse_request_line` rejects `\n`).
     fn json_line(multiline_raw: &str) -> String {
@@ -279,13 +383,13 @@ mod tests {
     }
 
     #[test]
-    fn serializes_pin_value_response() {
-        let response = ResponseMessage::pin_value("get-1", PinValuePayload::Value(1));
+    fn serializes_get_result_response() {
+        let response = ResponseMessage::get_result("get-1", PinValuePayload::Value(1));
         let line = serialize_response(&response).expect("response should serialize");
 
         assert_eq!(
             line,
-            json_line(r#"{"id":"get-1","status":"pin_value","value":1}"#)
+            json_line(r#"{"id":"get-1","status":"get_result","value":1}"#)
         );
     }
 

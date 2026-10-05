@@ -241,10 +241,19 @@ impl Backend for MockBackend {
     type EdgeEventBuffer = super::events::MockEdgeEventBuffer;
 
     fn open_chip(&self, path: &str) -> Result<Self::Chip, GPIOError> {
+        let mut chips = self
+            .chips
+            .lock()
+            .map_err(|_| GPIOError::Other("mock chip registry lock poisoned".to_owned()))?;
+        if let Some(chip) = chips.get(path) {
+            return Ok(chip.clone());
+        }
         let state = super::state::open_chip_state(path, self.write_log())?;
         let watcher = Arc::new(ChipWatcher::new(state.clone(), self.poll_interval()));
         watcher.start_if_needed();
-        Ok(MockChip::new(state, watcher))
+        let chip = MockChip::new(state, watcher);
+        chips.insert(path.to_owned(), chip.clone());
+        Ok(chip)
     }
 
     fn new_line_settings(&self) -> Result<Self::LineSettings, GPIOError> {
@@ -271,5 +280,66 @@ impl Backend for MockBackend {
 
     fn api_version(&self) -> &'static str {
         super::MOCK_API_VERSION
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpio::LineDirection;
+    use crate::gpio::LineInfo;
+    use crate::gpio::LineSettings;
+    use std::time::Duration;
+
+    #[test]
+    fn concurrent_opens_share_one_state_and_watcher_and_release_ownership() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "<gpiochip id=\"chip\"><line id=\"0\">L</line></gpiochip>",
+        )
+        .unwrap();
+        let path = file.path().to_str().unwrap().to_owned();
+        let backend = MockBackend::with_poll_interval(Duration::from_millis(1));
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let joins: Vec<_> = (0..4)
+            .map(|_| {
+                let backend = backend.clone();
+                let barrier = barrier.clone();
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    backend.open_chip(&path).unwrap()
+                })
+            })
+            .collect();
+        let chips: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
+        assert!(chips[0].wait_for_watcher_ready(Duration::from_secs(1)));
+        for chip in &chips {
+            assert!(Arc::ptr_eq(&chip.state, &chips[0].state));
+            assert!(Arc::ptr_eq(&chip.watcher, &chips[0].watcher));
+        }
+        let independent = MockBackend::new().open_chip(&path).unwrap();
+        assert!(!Arc::ptr_eq(&independent.state, &chips[0].state));
+        let mut settings = backend.new_line_settings().unwrap();
+        settings.set_direction(LineDirection::Input).unwrap();
+        let mut config = backend.new_line_config().unwrap();
+        config.add_line_settings(&[0], &settings).unwrap();
+        let request = chips[0].request_lines(None, &config).unwrap();
+        let info = chips[1].get_line_info(0).unwrap();
+        assert!(info.is_used());
+        assert_eq!(info.get_consumer(), None);
+        assert!(chips[1].request_lines(None, &config).is_err());
+        drop(request);
+        assert!(!chips[1].get_line_info(0).unwrap().is_used());
+        let watcher = Arc::downgrade(&chips[0].watcher);
+        drop(chips);
+        assert!(watcher.upgrade().is_some()); // Backend cache retains the watcher.
+        drop(backend);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while watcher.upgrade().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(watcher.upgrade().is_none());
     }
 }

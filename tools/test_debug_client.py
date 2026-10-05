@@ -13,6 +13,19 @@ import debug_client as dc
 
 
 class RequestConstructionTests(unittest.TestCase):
+    def test_query_all_single_and_array_request_shapes(self) -> None:
+        base = {"id": "q", "action": "query", "target": "gpio"}
+        self.assertEqual(dc.build_query_request("gpio", "q"), base)
+        self.assertEqual(dc.build_query_request("gpio", "q", " opaque "), {**base, "pin": " opaque "})
+        self.assertEqual(dc.build_query_request("gpio", "q", ["A", "B", "A"]),
+                         {**base, "pin": ["A", "B", "A"]})
+        self.assertEqual(dc.build_query_request("gpio", "q", ["A"]), {**base, "pin": ["A"]})
+        for pin in ["", [], [""], [1], "A|B", "lag"]:
+            with self.subTest(pin=pin), self.assertRaises(ValueError):
+                dc.build_query_request("gpio", "q", pin)
+        with self.assertRaises(ValueError):
+            dc.build_query_request("i2c", "q")
+
     def test_init_request_uses_pin_expressions_and_shared_parameters(self) -> None:
         target = {
             "GPIO4_B3": dc.build_target_config("input", bias="as_is"),
@@ -119,6 +132,30 @@ class RequestIdAllocatorTests(unittest.TestCase):
 
 
 class CliBuilderTests(unittest.TestCase):
+    def test_query_cli_invalid_pin_reports_validation_error(self) -> None:
+        for pin in ["", "A|B", "lag"]:
+            with self.subTest(pin=pin):
+                args = dc.build_parser().parse_args(["query", "--pin", pin])
+                args.id_allocator = dc.RequestIdAllocator()
+                with self.assertRaisesRegex(SystemExit, "pin.*non-empty"):
+                    args.build_payload(args)
+
+    def test_query_cli_shapes_and_ids(self) -> None:
+        allocator = dc.RequestIdAllocator()
+        for flags, expected_pin in [([], None), (["--pin", "A"], "A"),
+                                    (["--pin", "A", "--pin", "B"], ["A", "B"])]:
+            args = dc.build_parser().parse_args(["query", "--target", "gpio", *flags])
+            args.id_allocator = allocator
+            request = args.build_payload(args)
+            self.assertEqual(request["action"], "query")
+            self.assertEqual(request["target"], "gpio")
+            self.assertEqual(request.get("pin"), expected_pin)
+            self.assertEqual("pin" in request, expected_pin is not None)
+        args = dc.build_parser().parse_args(["query", "--id", "explicit"])
+        args.id_allocator = allocator
+        self.assertEqual(args.build_payload(args)["id"], "explicit")
+        self.assertEqual(allocator.next_id(), "4")
+
     def _namespace(self, **overrides: object) -> Namespace:
         values = {
             "request_id": None,
@@ -166,6 +203,19 @@ class CliBuilderTests(unittest.TestCase):
 
 
 class CorrelationTests(unittest.TestCase):
+    def test_query_result_correlates_while_events_are_interleaved(self) -> None:
+        result = {"id": "q", "status": "query_result", "target": "gpio", "pins": {}}
+        incoming = [
+            {"id": "q", "status": "event", "event": {"target": "IRQ", "type": "rising"}},
+            {"id": "get", "status": "get_result", "value": 0},
+            result,
+        ]
+        seen = []
+        self.assertEqual(dc.wait_for_matching_response(
+            incoming, "q", on_unsolicited=lambda kind, _payload: seen.append(kind)
+        ), result)
+        self.assertEqual(seen, ["event", "unsolicited"])
+
     def test_skips_events_until_matching_non_event_id(self) -> None:
         incoming = [
             {
@@ -206,7 +256,7 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(response["status"], "ok")
         self.assertEqual(seen, [("event", "event")])
 
-    def test_interleaved_unsolicited_and_pin_value(self) -> None:
+    def test_interleaved_unsolicited_and_get_result(self) -> None:
         incoming = [
             {
                 "id": "init-1",
@@ -214,7 +264,7 @@ class CorrelationTests(unittest.TestCase):
                 "event": {"target": "TRIG", "type": "rising"},
             },
             {"id": "other", "status": "ok"},
-            {"id": "get-1", "status": "pin_value", "value": 1},
+            {"id": "get-1", "status": "get_result", "value": 1},
         ]
         seen: list[str] = []
 
@@ -224,7 +274,7 @@ class CorrelationTests(unittest.TestCase):
             on_unsolicited=lambda kind, _payload: seen.append(kind),
         )
 
-        self.assertEqual(response["status"], "pin_value")
+        self.assertEqual(response["status"], "get_result")
         self.assertEqual(response["value"], 1)
         self.assertEqual(seen, ["event", "unsolicited"])
 
@@ -388,6 +438,18 @@ class InteractiveBuilderTests(unittest.TestCase):
     def _feed(self, lines: list[str]):
         iterator = iter(lines)
         return lambda _prompt: next(iterator)
+
+    def test_query_interactive_all_single_multiple_and_raw(self) -> None:
+        base = {"id": "q", "action": "query", "target": "gpio"}
+        for lines, expected in [
+            (["query", "", ""], base),
+            (["query", "gpio", "A"], {**base, "pin": "A"}),
+            (["query", "gpio", "A B"], {**base, "pin": ["A", "B"]}),
+            (["raw", '{"action":"query","target":"gpio","pin":["A"]}', ""], {**base, "pin": ["A"]}),
+        ]:
+            with self.subTest(lines=lines):
+                self.assertEqual(dc.build_request_interactively("q", self._feed(lines)), expected)
+
 
     def test_init_multi_target_with_optional_fields(self) -> None:
         request = dc.build_request_interactively(
@@ -604,6 +666,24 @@ class InteractiveBuilderTests(unittest.TestCase):
 
 
 class InteractiveLoopTests(unittest.TestCase):
+    def test_repl_queries_before_init_and_keeps_connection_and_ids(self) -> None:
+        lines = iter(["query", "", "", "query", "gpio", "A B", "quit"])
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.send.side_effect = [
+            {"id": "1", "status": "query_result", "target": "gpio", "pins": {}},
+            {"id": "2", "status": "query_result", "target": "gpio", "pins": {}},
+        ]
+        args = Namespace(socket="/tmp/query-test.sock", timeout=1.0,
+                         id_allocator=dc.RequestIdAllocator())
+        with patch.object(dc, "DebugClient", return_value=client) as factory:
+            self.assertEqual(dc.run_repl(args, readline=lambda _prompt: next(lines)), 0)
+        factory.assert_called_once_with(args.socket, args.timeout)
+        self.assertEqual([call.args[0] for call in client.send.call_args_list], [
+            {"id": "1", "action": "query", "target": "gpio"},
+            {"id": "2", "action": "query", "target": "gpio", "pin": ["A", "B"]},
+        ])
+
     def test_parser_default_and_repl_use_wizard(self) -> None:
         parser = dc.build_parser()
         default = parser.parse_args([])

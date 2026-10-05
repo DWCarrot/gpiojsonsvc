@@ -1,10 +1,13 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::protocol::common::ArrayMap;
 
 use super::common::deserialize_non_empty_string;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ResponseMessage {
     pub id: String,
     #[serde(flatten)]
@@ -15,14 +18,21 @@ impl ResponseMessage {
     pub fn ok(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            status: ResponseStatus::Ok,
+            status: ResponseStatus::Ok {},
         }
     }
 
-    pub fn pin_value(id: impl Into<String>, value: PinValuePayload) -> Self {
+    pub fn get_result(id: impl Into<String>, value: PinValuePayload) -> Self {
         Self {
             id: id.into(),
-            status: ResponseStatus::PinValue { value },
+            status: ResponseStatus::GetResult { value },
+        }
+    }
+
+    pub fn query_result(id: impl Into<String>, result: QueryResultPayload) -> Self {
+        Self {
+            id: id.into(),
+            status: ResponseStatus::QueryResult(result),
         }
     }
 
@@ -42,12 +52,36 @@ impl ResponseMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseStatus {
-    Ok,
+    // A struct variant lets Serde reject unknown fields even for this empty reply.
+    Ok {},
     Error { error: ErrorPayload },
     Event { event: EventPayload },
-    PinValue { value: PinValuePayload },
+    GetResult { value: PinValuePayload },
+    QueryResult(QueryResultPayload),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "lowercase", deny_unknown_fields)]
+pub enum QueryResultPayload {
+    Gpio { pins: BTreeMap<String, GpioPinInfo> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpioPinInfo {
+    pub id: u32,
+    pub is_used: bool,
+    pub consumer: Option<String>,
+    pub direction: GpioDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpioDirection {
+    Input,
+    Output,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

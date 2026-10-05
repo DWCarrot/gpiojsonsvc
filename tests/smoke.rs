@@ -152,6 +152,140 @@ fn bin() -> Command {
     command
 }
 
+#[tokio::test]
+async fn query_filters_reports_other_sessions_and_releases_ownership() {
+    let harness = Harness::spawn_mock().await;
+    let mut observer = harness.connect().await;
+    let chip0_before = std::fs::read(&harness.chip0).unwrap();
+    let chip1_before = std::fs::read(&harness.chip1).unwrap();
+    let result = observer
+        .rpc(&json!({"id":"all", "action":"query", "target":"gpio"}))
+        .await;
+    assert_eq!(result["status"], "query_result");
+    assert_eq!(result["target"], "gpio");
+    assert_eq!(result["pins"].as_object().unwrap().len(), 3);
+    assert_eq!(
+        result["pins"]["GPIO1_B5"],
+        json!({
+            "id":26, "is_used":false, "consumer":null, "direction":"output"
+        })
+    );
+    assert_eq!(result["pins"]["gpiochip0:0"]["direction"], "input");
+    for (id, filter, keys) in [
+        ("single", json!("GPIO1_B5"), vec!["GPIO1_B5"]),
+        (
+            "array",
+            json!(["GPIO1_B5", "gpiochip0:0", "GPIO1_B5"]),
+            vec!["GPIO1_B5", "gpiochip0:0"],
+        ),
+        ("one-array", json!(["gpiochip0:0"]), vec!["gpiochip0:0"]),
+    ] {
+        let result = observer
+            .rpc(&json!({"id":id, "action":"query", "target":"gpio", "pin":filter}))
+            .await;
+        assert_eq!(
+            result["pins"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            keys
+        );
+    }
+    assert_eq!(std::fs::read(&harness.chip0).unwrap(), chip0_before);
+    assert_eq!(std::fs::read(&harness.chip1).unwrap(), chip1_before);
+    assert_eq!(
+        observer
+            .rpc(&json!({"id":"unsupported", "action":"query", "target":"i2c"}))
+            .await,
+        json!({"id":"unsupported", "status":"error", "error":"query target `i2c` is not supported"})
+    );
+    assert_eq!(observer.rpc(&json!({"id":"unknown", "action":"query", "target":"gpio", "pin":["GPIO1_B5", "UNKNOWN"]})).await,
+        json!({"id":"unknown", "status":"error", "error":"unmapped pin `UNKNOWN`"}));
+
+    // Initialize the same connection after its pre-init queries and errors.
+    assert_eq!(
+        observer
+            .rpc(&json!({"id":"observe-init", "action":"init", "target":{
+                "gpiochip0:0":{"mode":"input"}
+            }}))
+            .await["status"],
+        "ok"
+    );
+    let mut owner = harness.connect().await;
+    assert_eq!(
+        owner
+            .rpc(&json!({"id":"own-init", "action":"init", "target":{
+                "GPIO1_B5":{"mode":"output", "initial":1, "final":0}
+            }}))
+            .await["status"],
+        "ok"
+    );
+    let result = observer
+        .rpc(&json!({"id":"owned", "action":"query", "target":"gpio"}))
+        .await;
+    assert_eq!(result["pins"].as_object().unwrap().len(), 3);
+    assert_eq!(result["pins"]["GPIO1_B5"]["is_used"], true);
+    assert!(
+        result["pins"]["GPIO1_B5"]["consumer"]
+            .as_str()
+            .unwrap()
+            .starts_with("svc_")
+    );
+    assert_eq!(result["pins"]["gpiochip0:0"]["is_used"], true); // Caller owns it.
+    assert_eq!(result["pins"]["gpiochip0:7"]["is_used"], false); // Uninitialized.
+    let chip_before_query = std::fs::read(&harness.chip1).unwrap();
+    let own_result = owner
+        .rpc(&json!({"id":"own-query", "action":"query", "target":"gpio", "pin":"GPIO1_B5"}))
+        .await;
+    assert_eq!(own_result["pins"]["GPIO1_B5"], result["pins"]["GPIO1_B5"]);
+    assert_eq!(std::fs::read(&harness.chip1).unwrap(), chip_before_query);
+    let mut contender = harness.connect().await;
+    assert_eq!(
+        contender
+            .rpc(&json!({"id":"conflict", "action":"init", "target":{
+                "GPIO1_B5":{"mode":"output"}
+            }}))
+            .await["status"],
+        "error"
+    );
+    drop(owner);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result = observer
+                .rpc(&json!({"id":"released", "action":"query", "target":"gpio", "pin":"GPIO1_B5"}))
+                .await;
+            if result["pins"]["GPIO1_B5"]["is_used"] == false {
+                assert!(result["pins"]["GPIO1_B5"]["consumer"].is_null());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("ownership was not released");
+    assert!(
+        std::fs::read_to_string(&harness.chip1)
+            .unwrap()
+            .contains(">L</line>")
+    );
+    assert_eq!(
+        contender
+            .rpc(&json!({"id":"retry", "action":"init", "target":{
+                "GPIO1_B5":{"mode":"output"}
+            }}))
+            .await["status"],
+        "ok"
+    );
+    assert_eq!(
+        observer
+            .rpc(&json!({"id":"get", "action":"get", "target":["gpiochip0:0"]}))
+            .await,
+        json!({"id":"get", "status":"get_result", "value":[0]})
+    );
+}
+
 fn spawn_service<'a>(args: impl IntoIterator<Item = &'a str>) -> Child {
     bin()
         .args(args)
@@ -403,7 +537,7 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
         .rpc(&json!({ "id": "2", "action": "get", "target": "gpiochip0:0" }))
         .await;
     assert_eq!(get_in["id"], "2");
-    assert_eq!(get_in["status"], "pin_value");
+    assert_eq!(get_in["status"], "get_result");
     assert_eq!(get_in["value"], 0);
 
     let set_out = client
@@ -424,7 +558,7 @@ async fn uds_init_get_immediate_set_and_stepped_set_persist_mock_state() {
         .rpc(&json!({ "id": "4", "action": "get", "target": "gpiochip0:0" }))
         .await;
     assert_eq!(get_in_again["id"], "4");
-    assert_eq!(get_in_again["status"], "pin_value");
+    assert_eq!(get_in_again["status"], "get_result");
     assert_eq!(get_in_again["value"], 0);
 
     let stepped_request = json!({

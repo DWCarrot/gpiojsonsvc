@@ -11,11 +11,11 @@ python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock
 
 `--socket` defaults to `/tmp/gpiojsonsvc.sock`; `--timeout` defaults to 5 seconds. Match the socket to the service configuration. Pin names are exact `[pins.gpiod]` keys. Use `A|B` to share init parameters; quote expressions containing `|` in shell commands.
 
-Commands are default/`repl`, `init`, `get`, `set`, `raw`, and `script`.
+Commands are default/`repl`, `init`, `query`, `get`, `set`, `raw`, and `script`.
 
 ## Session lifetime
 
-`init` must succeed once on the same connection before `get` or `set`. The wizard and `script` keep one connection for the entire session. Each one-shot command (`init`, `get`, `set`, `raw`) connects, sends one request, receives its reply, and disconnects. A later command in another process cannot reuse that initialized session.
+`init` must succeed once on the same connection before `get` or `set`. Query requires no initialization. The wizard and `script` keep one connection for the entire session. Each one-shot command (`init`, `query`, `get`, `set`, `raw`) connects, sends one request, receives its reply, and disconnects. A later command in another process cannot reuse that initialized session.
 
 Use one-shot init to check configuration or the wizard/script for actual init/get/set sequences. Disconnect applies any configured final output values.
 
@@ -24,7 +24,7 @@ Use one-shot init to check configuration or the wizard/script for actual init/ge
 Omit the subcommand or pass `repl`. The wizard connects once and prompts for each request. `help`, `quit`, `exit`, and Ctrl-D are local actions.
 
 ```text
-action [init/get/set/raw, help/quit]: init
+action [init/query/get/set/raw, help/quit]: init
 pin expression (A|B): GPIO1_B5|GPIO1_B6
 mode [input/output/trigger]: output
 drive [push_pull/open_drain/open_source, empty=omit]: push_pull
@@ -66,6 +66,26 @@ python3 tools/debug_client.py init --target-json '{"GPIO1_B5":{"mode":"output","
 
 Do not mix `--target-json` with `--mode`, `--pin`, or `--pins`. The nested `pin` field from the old protocol is rejected.
 
+## Query commands
+
+Query works on a fresh connection and reports GPIO metadata, including usage by
+other sessions. The request uses `target: "gpio"` and an optional `pin` filter:
+
+```bash
+python3 tools/debug_client.py query --target gpio
+python3 tools/debug_client.py query --target gpio --pin GPIO1_A0
+python3 tools/debug_client.py query --target gpio --pin GPIO1_A0 --pin GPIO1_B5
+```
+
+The target defaults to `gpio`. No `--pin` flags selects all configured pins;
+one flag sends a string, and multiple flags send an array. The response uses
+`status: "query_result"` and a `pins` map, even for one pin. Entries contain
+configured `id`, `is_used`, nullable `consumer`, and `direction`.
+
+In the wizard, choose `query`, accept `gpio` (or leave target empty), then enter
+space-separated pin names or leave the pin prompt empty for all. Query is
+available before init and afterward. Use raw JSON for names containing spaces.
+
 ## Get and set commands
 
 These examples show command syntax; get/set on a fresh connection return `session is not initialized`. Use equivalent requests in the wizard or script after init.
@@ -78,9 +98,9 @@ python3 tools/debug_client.py set --target-json '{"GPIO1_B5":1,"GPIO1_B6":1,"GPI
 python3 tools/debug_client.py set --steps-json '[{"GPIO1_B5":1,"GPIO1_B6":0},{"lag":100,"GPIO1_B6":1}]'
 ```
 
-Reads permit input and trigger pins; writes permit outputs. Get and set accept only individual names, with values of 0 or 1. Init sharing does not restrict which pins a later request can address.
+Reads permit input and trigger pins; writes permit outputs. Get and set accept only individual names, with values of 0 or 1. Init sharing does not restrict which pins a later request can address. Successful get replies use `status: "get_result"` with the existing scalar/array `value` field; `pin_value` is the previous status.
 
-Set accepts exactly one of `--target` plus `--value`, `--target-json`, or `--steps-json`. Step 0 omits lag or uses zero; later steps require positive `u32` millisecond delays. All steps are validated before execution. The reply follows the last step; another set while a sequence is running is rejected, while get remains allowed. Disconnect cancels remaining steps and applies final values.
+Set accepts exactly one of `--target` plus `--value`, `--target-json`, or `--steps-json`. Step 0 omits lag or uses zero; later steps require positive `u32` millisecond delays. All steps are validated before execution. The reply follows the last step; another set while a sequence is running is rejected, while get and query remain allowed. Disconnect cancels remaining steps and applies final values.
 
 ## Raw JSON
 

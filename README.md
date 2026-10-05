@@ -9,7 +9,7 @@ The runnable path is the mock backend plus a Unix-socket listener:
 - Load TOML (positional path, `GPIOJSONSVC_CONFIG`, or `gpiojsonsvc.toml`)
 - Select the mock backend with `--mock` (optionally `GPIOJSONSVC_MOCK_LOG` to append chip XML dumps after writes)
 - Accept clients on `service.socket`
-- Handle `init`, `get`, and `set` (immediate and stepped) per connection
+- Handle `init`, `query`, `get`, and `set` (immediate and stepped) per connection
 - Emit trigger `event` messages for configured trigger pins
 
 Without `--mock`, startup fails with `real backend unavailable; use --mock`. `src/gpio/sys.rs` is a stub; Rock5B `libgpiod` FFI is not implemented.
@@ -133,19 +133,32 @@ The unit's `ExecStart` does not pass `--mock`. Current builds still fail without
 
 ## Protocol (summary)
 
-Each request has a non-empty `id` and an `action`. `init` must succeed once per connection before `get` or `set`. The `target` field uses exact configuration pin names directly; custom target bindings and the nested `pin` field have been removed.
+Each request has a non-empty `id` and an `action`. `init` must succeed once per connection before `get` or `set`. For these actions, `target` uses exact configuration pin names directly; custom target bindings and the nested init `pin` field have been removed. Query uses `target: "gpio"` and an optional top-level `pin` filter and does not require init.
 
 ```json
 {"id":"1","action":"init","target":{"GPIO1_B5|GPIO1_B6":{"mode":"output","initial":1,"final":0},"GPIO1_A0":{"mode":"input"}}}
 {"id":"2","action":"get","target":"GPIO1_A0"}
 {"id":"3","action":"set","target":{"GPIO1_B6":1,"GPIO1_B5":0}}
+{"id":"4","action":"query","target":"gpio"}
+{"id":"5","action":"query","target":"gpio","pin":"GPIO1_A0"}
+{"id":"6","action":"query","target":"gpio","pin":["GPIO1_A0","GPIO1_B5"]}
 ```
 
 In `init`, `A|B` applies the same parameters to each pin. Output `initial` and `final` are optional single-bit values (0 or 1), broadcast to every pin in that entry. Omit `initial` to preserve the existing value when requesting the line; omit `final` to skip a close write. Init groups can also configure multiple triggers, each emitting events under its own pin name.
 
 In `get` and `set`, use individual pin names and values of 0 or 1. Get accepts one name or an array of names; set accepts separate name/value entries. `|` is supported only in init. Reads allow input/trigger pins; writes require outputs. Each physical pin may appear only once in init. Stepped `set` uses an array of objects: step 0 omits `lag` (or uses 0), and later steps require positive millisecond delays. The `ok` reply follows the last applied step. Trigger events reuse the init request ID; final values are applied on graceful session close.
 
-This is a breaking protocol change; see the migration notes in the protocol reference.
+Query omits `pin` to return all configured GPIO pins; a string or non-empty array
+returns only the selected exact keys. The `query_result` response contains
+`target: "gpio"` and a `pins` map. Each entry contains the configured GPIO `id`,
+`is_used`, nullable `consumer`, and input/output `direction`. It observes current
+ownership, including other sessions, without requesting lines or changing
+settings. Unknown pins or selected backend failures return one error rather than
+a partial result. Query is also allowed during stepped sets.
+
+Successful get replies now use `status: "get_result"` instead of `pin_value`,
+with the same scalar/array `value` field. This is a breaking response-status
+change; update clients and see the migration notes in the protocol reference.
 
 Full request and response shapes: [docs/protocol.md](docs/protocol.md). Layers and session flow: [docs/architecture.md](docs/architecture.md).
 
@@ -153,16 +166,18 @@ Full request and response shapes: [docs/protocol.md](docs/protocol.md). Layers a
 
 Usage, session rules, and examples: [docs/debug_client.md](docs/debug_client.md).
 
-With no subcommand (or `repl`), the client opens one socket and walks `init` / `get` / `set` field by field. Use `raw` to paste a multi-line request object, including its `action`, ended by a blank line.
+With no subcommand (or `repl`), the client opens one socket and walks `init` / `query` / `get` / `set` field by field. Query is available before init. Use `raw` to paste a multi-line request object, including its `action`, ended by a blank line.
 
 ```bash
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock script /path/to/session.jsonl
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock init --mode output --pin GPIO1_B5
+python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock query --target gpio
+python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock query --target gpio --pin GPIO1_A0 --pin GPIO1_B5
 python3 tools/debug_client.py --socket /tmp/gpiojsonsvc.sock raw '{"id":"1","action":"get","target":"GPIO1_A0"}'
 ```
 
-`init`/`get`/`set`/`raw` each open a new connection and send one request. Use the wizard or `script` for `init` followed by `get`/`set` on the same session. The wizard and canned commands allocate increasing string IDs unless `--id` is set on a one-shot command. `raw` and `script` send JSON as written.
+`init`/`query`/`get`/`set`/`raw` each open a new connection and send one request. Use the wizard or `script` for `init` followed by `get`/`set` on the same session. Query's repeatable `--pin` selects names; omit it for all. The wizard and canned commands allocate increasing string IDs unless `--id` is set on a one-shot command. `raw` and `script` send JSON as written.
 
 Python unit tests (no live service):
 

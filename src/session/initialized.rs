@@ -33,6 +33,8 @@ use super::state::SessionError;
 pub trait SessionConfig: Send + Sync {
     fn resolve_gpiod_pin(&self, pin: &str) -> Option<&GPIODPinSpec>;
 
+    fn gpiod_pins(&self) -> &BTreeMap<String, GPIODPinSpec>;
+
     /// Render `service.gpio-consumer` for `session_id`.
     ///
     /// Test pin-map implementations use the default template `svc_{id}`.
@@ -42,6 +44,10 @@ pub trait SessionConfig: Send + Sync {
 }
 
 impl SessionConfig for ServiceConfig {
+    fn gpiod_pins(&self) -> &BTreeMap<String, GPIODPinSpec> {
+        ServiceConfig::gpiod_pins(self)
+    }
+
     fn resolve_gpiod_pin(&self, pin: &str) -> Option<&GPIODPinSpec> {
         ServiceConfig::resolve_gpiod_pin(self, pin)
     }
@@ -52,6 +58,10 @@ impl SessionConfig for ServiceConfig {
 }
 
 impl SessionConfig for BTreeMap<String, GPIODPinSpec> {
+    fn gpiod_pins(&self) -> &BTreeMap<String, GPIODPinSpec> {
+        self
+    }
+
     fn resolve_gpiod_pin(&self, pin: &str) -> Option<&GPIODPinSpec> {
         self.get(pin)
     }

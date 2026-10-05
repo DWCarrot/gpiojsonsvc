@@ -18,6 +18,18 @@ pub struct ArrayMap<K, V> {
     entries: Vec<(K, V)>,
 }
 
+impl <K: Sized, V: Sized> ArrayMap<K, V> {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(capacity),
+        }
+    }
+}
+
 impl<K, V> ArrayMap<K, V> {
     pub fn len(&self) -> usize {
         self.entries.len()
