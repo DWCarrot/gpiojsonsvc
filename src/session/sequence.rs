@@ -39,7 +39,7 @@ impl PendingSetSequence {
         chip_count: usize,
     ) -> Result<PendingCompiledSteps, SessionError<'a>> {
         if steps.is_empty() {
-            return Err(SessionError::Other(
+            return Err(SessionError::InvalidParameters(
                 "set target steps must contain at least one step".to_owned(),
             ));
         }
@@ -139,6 +139,7 @@ mod tests {
     use crate::session::CompiledPins;
     use crate::session::PinMode;
     use crate::session::ResolvedPin;
+    use crate::session::SessionError;
 
     use super::PendingSetSequence;
 
@@ -162,6 +163,15 @@ mod tests {
             by_name,
             trigger_by_pin: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn empty_steps_are_invalid_parameters() {
+        let compiled = output_targets();
+        let error = PendingSetSequence::compile_steps(&compiled, &[], 1)
+            .err()
+            .expect("empty steps");
+        assert!(matches!(error, SessionError::InvalidParameters(_)));
     }
 
     #[test]

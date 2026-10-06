@@ -1453,15 +1453,13 @@ mod tests {
         fs::write(chip_file.path(), line0_xml("H")).expect("external rising edit");
 
         let event = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                let response = recv_response(&mut responses).await;
-                match response.status {
-                    ResponseStatus::Event { event } => {
-                        assert_eq!(response.id, "init-trig");
-                        return event;
-                    }
-                    other => panic!("unexpected response while waiting for event: {other:?}"),
+            let response = recv_response(&mut responses).await;
+            match response.status {
+                ResponseStatus::Event { event } => {
+                    assert_eq!(response.id, "init-trig");
+                    event
                 }
+                other => panic!("unexpected response while waiting for event: {other:?}"),
             }
         })
         .await

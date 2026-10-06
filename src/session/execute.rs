@@ -64,7 +64,7 @@ pub fn add_set_target<'n>(
 ) -> Result<(), SessionError<'n>> {
     let pin = resolve_pin(compiled, selector, true)?;
     if value > 1 {
-        return Err(SessionError::Other(format!(
+        return Err(SessionError::InvalidParameters(format!(
             "pin `{selector}` value must be 0 or 1"
         )));
     }
@@ -83,7 +83,7 @@ fn resolve_pin<'a>(
     name: &'a str,
     writing: bool,
 ) -> Result<ResolvedPin, SessionError<'a>> {
-    crate::protocol::request::validate_pin_name(name).map_err(SessionError::Other)?;
+    crate::protocol::request::validate_pin_name(name).map_err(SessionError::InvalidParameters)?;
     let pin = compiled
         .pin(name)
         .ok_or(SessionError::UnknownTarget { target: name })?;
@@ -149,7 +149,12 @@ pub fn apply_set_batch<B: Backend>(
 }
 
 fn batch_error_to_session_error(error: CombinedOffsetsError) -> SessionError<'static> {
-    SessionError::Other(error.to_string())
+    match error {
+        CombinedOffsetsError::DuplicateSetOffset { .. } => {
+            SessionError::InvalidParameters(error.to_string())
+        }
+        CombinedOffsetsError::InvalidChipIndex { .. } => SessionError::Other(error.into()),
+    }
 }
 
 #[cfg(test)]
@@ -169,14 +174,17 @@ mod tests {
     use crate::protocol::request::PinSelector;
     use crate::protocol::request::TargetSelector;
     use crate::protocol::response::PinValuePayload;
+    use crate::session::SessionError;
 
     use super::CollectRule;
     use super::CombinedOffsets;
+    use super::CombinedOffsetsError;
     use super::GetResultSize;
     use super::add_get_target;
     use super::add_set_target;
     use super::apply_get_batch;
     use super::apply_set_batch;
+    use super::batch_error_to_session_error;
     use super::compile_get_batch;
     use super::compile_set_batch;
     use crate::session::InitializedSession;
@@ -323,7 +331,15 @@ mod tests {
     #[test]
     fn rejects_combined_names_unknown_pins_and_wrong_modes() {
         let session = sample_session();
-        for name in ["gpiochip0:0|gpiochip0:1", "MISSING", "gpiochip0:2"] {
+        assert!(matches!(
+            compile_get_batch(
+                &session.compiled_pins,
+                ["gpiochip0:0|gpiochip0:1"],
+                session.chip_count()
+            ),
+            Err(SessionError::InvalidParameters(_))
+        ));
+        for name in ["MISSING", "gpiochip0:2"] {
             assert!(
                 compile_get_batch(&session.compiled_pins, [name], session.chip_count()).is_err()
             );
@@ -345,14 +361,14 @@ mod tests {
     fn rejects_non_bit_values_before_applying_any_writes() {
         let session = sample_session();
         for value in [2, 4, 255] {
-            assert!(
+            assert!(matches!(
                 compile_set_batch(
                     &session.compiled_pins,
                     [("gpiochip0:2", 1), ("gpiochip0:3", value)],
                     session.chip_count()
-                )
-                .is_err()
-            );
+                ),
+                Err(SessionError::InvalidParameters(_))
+            ));
         }
         assert_eq!(
             session.chips[0].request.get_value(2).unwrap(),
@@ -372,6 +388,20 @@ mod tests {
         );
         let mut writes = CombinedOffsets::new(session.chip_count());
         add_set_target(&mut writes, &session.compiled_pins, "gpiochip0:2", 1).unwrap();
-        assert!(add_set_target(&mut writes, &session.compiled_pins, "gpiochip0:2", 0).is_err());
+        assert!(matches!(
+            add_set_target(&mut writes, &session.compiled_pins, "gpiochip0:2", 0),
+            Err(SessionError::InvalidParameters(_))
+        ));
+    }
+
+    #[test]
+    fn batch_error_retains_typed_source() {
+        let error =
+            batch_error_to_session_error(CombinedOffsetsError::InvalidChipIndex { chip_index: 1 });
+        assert!(matches!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<CombinedOffsetsError>()),
+            Some(CombinedOffsetsError::InvalidChipIndex { chip_index: 1 })
+        ));
     }
 }

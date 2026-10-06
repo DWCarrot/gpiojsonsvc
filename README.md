@@ -190,6 +190,7 @@ python3 tools/test_debug_client.py
 ```bash
 cargo fmt
 cargo test
+cargo clippy --all-targets
 ```
 
 ## Deferred

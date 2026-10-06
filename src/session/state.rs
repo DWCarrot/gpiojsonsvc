@@ -31,17 +31,19 @@ pub enum SessionError<'a> {
     #[error("unmapped pin `{pin}`")]
     UnmappedPin { pin: &'a str },
     #[error("device file `{device}` is unavailable")]
-    UnavailableDeviceFile { device: String },
+    UnavailableDeviceFile { device: &'a str },
     #[error("line {line} is not available on device `{device}`")]
-    MissingLine { device: String, line: u32 },
+    MissingLine { device: &'a str, line: u32 },
     #[error("pin `{pin}` maps to a duplicate physical location")]
     DuplicatePhysicalLocation { pin: &'a str },
     #[error("no trigger pin is configured for chip {chip_index} offset {offset}")]
     UnmappedTriggerPin { chip_index: u32, offset: u32 },
+    #[error("{0}")]
+    InvalidParameters(String),
     #[error(transparent)]
     GPIO(GPIOError),
     #[error("{0}")]
-    Other(String),
+    Other(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl<'a> SessionError<'a> {

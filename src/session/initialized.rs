@@ -90,11 +90,11 @@ impl<B: Backend> InitializedSession<B> {
         init_request_id: String,
         request: &'a ArrayMap<PinSelector, PinConfigRequest>,
         backend: &B,
-        config: &dyn SessionConfig,
+        config: &'a dyn SessionConfig,
         consumer: &str,
     ) -> Result<Self, SessionError<'a>> {
         if request.is_empty() {
-            return Err(SessionError::Other(
+            return Err(SessionError::InvalidParameters(
                 "init target must not be empty".to_owned(),
             ));
         }
@@ -107,7 +107,9 @@ impl<B: Backend> InitializedSession<B> {
         let mut finals = Vec::new();
         let mut settings = backend.new_line_settings()?;
         for (selector, pin_config) in request {
-            pin_config.validate().map_err(SessionError::Other)?;
+            pin_config
+                .validate()
+                .map_err(SessionError::InvalidParameters)?;
             settings.reset();
             let mode = match pin_config {
                 PinConfigRequest::Input { bias } => {
@@ -182,7 +184,7 @@ impl<B: Backend> InitializedSession<B> {
         for (pin, value) in finals {
             final_batch
                 .add_set(pin.chip_index, pin.offset, value)
-                .map_err(|e| SessionError::Other(e.to_string()))?;
+                .map_err(|error| SessionError::Other(error.into()))?;
         }
         let edge_buffer = backend.new_edge_event_buffer(16)?;
         let chips_data = chip_indices.collect();
@@ -227,21 +229,16 @@ struct GPIODChipData<B: Backend> {
     line_config: B::LineConfig,
 }
 
-fn map_open_chip_error<'a>(device: &str, error: GPIOError) -> SessionError<'a> {
+fn map_open_chip_error<'a>(device: &'a str, error: GPIOError) -> SessionError<'a> {
     match error {
-        GPIOError::Io(_) => SessionError::UnavailableDeviceFile {
-            device: device.to_owned(),
-        },
+        GPIOError::Io(_) => SessionError::UnavailableDeviceFile { device },
         other => SessionError::GPIO(other),
     }
 }
 
-fn map_request_lines_error<'a>(device: &str, error: GPIOError) -> SessionError<'a> {
+fn map_request_lines_error<'a>(device: &'a str, error: GPIOError) -> SessionError<'a> {
     match error {
-        GPIOError::InvalidOffset(line) => SessionError::MissingLine {
-            device: device.to_owned(),
-            line,
-        },
+        GPIOError::InvalidOffset(line) => SessionError::MissingLine { device, line },
         other => SessionError::GPIO(other),
     }
 }
@@ -384,6 +381,37 @@ mod tests {
                 },
             ),
         ])
+    }
+
+    #[test]
+    fn initialize_classifies_invalid_request_parameters() {
+        let backend = MockBackend::new();
+        let pins = BTreeMap::<String, GPIODPinSpec>::new();
+        let empty = ArrayMap::<PinSelector, PinConfigRequest>::new();
+        let error =
+            InitializedSession::initialize("init-1".to_owned(), &empty, &backend, &pins, "svc_1")
+                .err()
+                .expect("empty target");
+        assert!(matches!(error, SessionError::InvalidParameters(_)));
+
+        let invalid_value = init_map([(
+            "OUT".to_owned(),
+            PinConfigRequest::Output {
+                drive: None,
+                initial_value: Some(2),
+                final_value: None,
+            },
+        )]);
+        let error = InitializedSession::initialize(
+            "init-2".to_owned(),
+            &invalid_value,
+            &backend,
+            &pins,
+            "svc_1",
+        )
+        .err()
+        .expect("invalid output value");
+        assert!(matches!(error, SessionError::InvalidParameters(_)));
     }
 
     #[test]
@@ -591,20 +619,16 @@ gpio-consumer = "app_{id}"
     #[test]
     fn initialize_rejects_unmapped_pin() {
         let backend = MockBackend::new();
+        let pins = BTreeMap::<String, GPIODPinSpec>::new();
         let request = init_map([(
             "gpiochip0:0".to_owned(),
             PinConfigRequest::Input { bias: None },
         )]);
 
-        let error = InitializedSession::initialize(
-            "init-1".to_owned(),
-            &request,
-            &backend,
-            &BTreeMap::<String, GPIODPinSpec>::new(),
-            "svc_1",
-        )
-        .err()
-        .expect("unmapped pin");
+        let error =
+            InitializedSession::initialize("init-1".to_owned(), &request, &backend, &pins, "svc_1")
+                .err()
+                .expect("unmapped pin");
         assert!(matches!(
             error,
             SessionError::UnmappedPin { pin: "gpiochip0:0" }

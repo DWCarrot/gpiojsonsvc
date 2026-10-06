@@ -58,10 +58,13 @@ where
             LineDirection::Input => GpioDirection::Input,
             LineDirection::Output => GpioDirection::Output,
             LineDirection::AsIs => {
-                return Err(SessionError::Other(format!(
-                    "pin `{pin}` on device `{}` line {} has unexpected direction `as_is`",
-                    spec.device, spec.line,
-                )));
+                return Err(SessionError::Other(
+                    format!(
+                        "pin `{pin}` on device `{}` line {} has unexpected direction `as_is`",
+                        spec.device, spec.line,
+                    )
+                    .into(),
+                ));
             }
         };
         result.insert(pin.to_owned(), GpioPinInfo {
