@@ -4,15 +4,15 @@
 
 ## Current status
 
-The runnable path is the mock backend plus a Unix-socket listener:
+The service supports real GPIO on Linux through libgpiod 2.x and a file-backed mock backend:
 
 - Load TOML (positional path, `GPIOJSONSVC_CONFIG`, or `gpiojsonsvc.toml`)
-- Select the mock backend with `--mock` (optionally `GPIOJSONSVC_MOCK_LOG` to append chip XML dumps after writes)
+- Use the real backend by default on Linux, or select the mock with `--mock` (optionally `GPIOJSONSVC_MOCK_LOG` to append chip XML dumps after writes)
 - Accept clients on `service.socket`
 - Handle `init`, `query`, `get`, and `set` (immediate and stepped) per connection
 - Emit trigger `event` messages for configured trigger pins
 
-Without `--mock`, startup fails with `real backend unavailable; use --mock`. `src/gpio/sys.rs` is a stub; Rock5B `libgpiod` FFI is not implemented.
+The real backend is implemented in `src/gpio/sys/`. Startup checks that each distinct mapped device is a GPIO chip; line availability and access are checked when queried or requested.
 
 ## Configuration
 
@@ -22,7 +22,7 @@ Discovery order:
 2. environment variable `GPIOJSONSVC_CONFIG`
 3. `gpiojsonsvc.toml` in the process working directory
 
-The file holds service settings and a portable `[pins.gpiod]` map. Backend selection is a CLI flag, not a TOML field. Each mapped `device` is interpreted by the selected backend: a one-chip XML path in mock mode, a device path (for example `/dev/gpiochip0`) once the real backend exists.
+The file holds service settings and a portable `[pins.gpiod]` map. Backend selection is a CLI flag, not a TOML field. Each mapped `device` is interpreted by the selected backend: a one-chip XML path in mock mode, a GPIO chip device path (for example `/dev/gpiochip0`) in real mode.
 
 ```toml
 [service]
@@ -57,6 +57,21 @@ With `--mock`, each distinct `device` path is one XML document whose root is a s
 
 Line text is the physical level (`H` or `L`). Startup validates that every mapped path exists, parses as one-chip XML, and contains the configured `line`. Opening the same path twice in one session reuses one session chip; different paths open independent chips.
 
+## Build
+
+Prerequisites for Linux builds, including mock usage:
+
+- A Rust toolchain with Cargo supporting edition 2024.
+- `pkg-config` and libgpiod **2.x** development headers and libraries (`libgpiod-dev` or the equivalent package; 1.x is insufficient).
+- `libclang` for generating the FFI bindings with bindgen.
+
+Check that `pkg-config --modversion libgpiod` reports 2.x, then build:
+
+```bash
+cargo build
+cargo build --release
+```
+
 ## Run
 
 ```bash
@@ -66,7 +81,7 @@ gpiojsonsvc --mock /path/to/gpiojsonsvc.toml
 GPIOJSONSVC_MOCK_LOG=/tmp/mock-write.log gpiojsonsvc --mock /path/to/gpiojsonsvc.toml
 ```
 
-`--mock` is required until the real backend exists. `--mock` enables the file-backed mock. `GPIOJSONSVC_MOCK_LOG` also enables the mock backend write log at that path; it is an error if that variable is set without `--mock`. The process listens until SIGINT, then closes live sessions, removes the socket, and exits. It also removes a stale socket file before bind.
+Without `--mock`, the service uses the real backend on Linux. `--mock` enables the file-backed mock. `GPIOJSONSVC_MOCK_LOG` also enables the mock backend write log at that path; it is an error if that variable is set without `--mock`. The process listens until SIGINT or SIGTERM, then closes live sessions, removes the socket, and exits. It also removes a stale socket file before bind.
 
 ## Group access to the socket
 
@@ -129,7 +144,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now gpiojsonsvc.service
 ```
 
-The unit's `ExecStart` does not pass `--mock`. Current builds still fail without it until the real backend exists; add `--mock` to `ExecStart` for a mock deployment. The config's `socket` must be `/run/gpiojsonsvc/service.sock`, matching the runtime directory.
+The unit's `ExecStart` uses the real backend. For a mock deployment, add `--mock` to `ExecStart` and point the configured devices at mock XML files. The config's `socket` must be `/run/gpiojsonsvc/service.sock`, matching the runtime directory.
 
 ## Protocol (summary)
 
@@ -199,7 +214,6 @@ Not implemented yet:
 
 - Process-wide shared-read / exclusive-write locks
 - Protocol trigger `filter`
-- Real `libgpiod` backend (`src/gpio/sys.rs`)
 - Optional Cargo feature gate for the mock backend
 
-`.cursor/general-instrument.md` records earlier product intent; it is not the live protocol.
+The live protocol is documented in [docs/protocol.md](docs/protocol.md). Outstanding query behavior is tracked in [docs/TODO](docs/TODO).

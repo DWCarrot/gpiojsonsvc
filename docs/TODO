@@ -1,0 +1,12 @@
+# TODO
+
+## Query collection
+
+`src/session/query.rs` currently falls short of the intended collection behavior:
+
+- Names are resolved as devices are opened and lines inspected, so GPIO I/O can occur before a later unknown name is rejected.
+- Repeated names and aliases trigger separate line-info reads. Result keys collapse repeated names, but aliases can observe different metadata for the same physical line.
+- Backend inspection errors are propagated without adding the selected pin, device, and line context.
+
+Pending fix: validate and deduplicate the full selection before GPIO I/O, reuse one snapshot per `(device, line)`, and add context to inspection errors.
+

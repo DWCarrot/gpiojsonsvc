@@ -78,7 +78,7 @@ into a cached chip snapshot. To change those fixtures, restart the mock service.
 
 ## Persistence and external edits
 
-Output `set` and line-request property changes rewrite the XML on disk. `GPIOJSONSVC_MOCK_LOG` appends those snapshots to a separate log; it is not this chip file.
+Output `set` and line-request property changes rewrite the chip XML on disk. `GPIOJSONSVC_MOCK_LOG` records snapshots after output writes, including explicit initial and final values. Property-only changes are not logged.
 
 A file watcher reloads the XML. Changing an **input** line’s `H`/`L` is treated as an external edge (converted with the **baseline** `active_low`). Changing only names, labels, direction, bias, drive, or `active_low`, or changing an **output** line’s level, does not emit an input event.
 

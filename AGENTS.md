@@ -12,7 +12,7 @@
 - `cargo test` runs Rust unit and integration tests.
 - `python3 tools/test_debug_client.py` runs the debug client’s Python tests.
 
-The real GPIO backend is not currently available; use `--mock` for local runs.
+Linux builds require libgpiod 2.x development files, pkg-config, and libclang, including for mock usage; see `README.md` for build prerequisites. The real GPIO backend is available on Linux; use `--mock` for local runs without GPIO hardware.
 
 ## Style and Naming
 
