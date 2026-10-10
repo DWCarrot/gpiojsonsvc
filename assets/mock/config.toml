@@ -1,0 +1,25 @@
+# Two-chip gpio-sim development configuration for tools/gpio_sim_dev.py.
+# WARNING: Never use this configuration, its helper, or dependent tests on a
+# system with hardware GPIO controllers.
+
+[service]
+socket = "/tmp/gpiojsonsvc-gpio-sim.sock"
+gpio-consumer = "svc_{id}"
+
+[pins.gpiod]
+"gpiochip0:0" = { id = 0, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 0 }
+"gpiochip0:1" = { id = 1, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 1 }
+"gpiochip0:2" = { id = 2, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 2 }
+"gpiochip0:3" = { id = 3, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 3 }
+"gpiochip0:4" = { id = 4, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 4 }
+"gpiochip0:5" = { id = 5, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 5 }
+"gpiochip0:6" = { id = 6, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 6 }
+"gpiochip0:7" = { id = 7, device = "/run/gpiojsonsvc-gpio-sim/gpiochip0", line = 7 }
+"gpiochip1:0" = { id = 8, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 0 }
+"gpiochip1:1" = { id = 9, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 1 }
+"gpiochip1:2" = { id = 10, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 2 }
+"gpiochip1:3" = { id = 11, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 3 }
+"gpiochip1:4" = { id = 12, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 4 }
+"gpiochip1:5" = { id = 13, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 5 }
+"gpiochip1:6" = { id = 14, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 6 }
+"gpiochip1:7" = { id = 15, device = "/run/gpiojsonsvc-gpio-sim/gpiochip1", line = 7 }

@@ -1,0 +1,31 @@
+{
+  "simulator": "gpiojsonsvc-dev",
+  "chips": [
+    {
+      "name": "gpiochip0",
+      "lines": [
+        { "name": "gpiochip0:0", "value": "L" },
+        { "name": "gpiochip0:1", "value": "L" },
+        { "name": "gpiochip0:2", "value": "L" },
+        { "name": "gpiochip0:3", "value": "L" },
+        { "name": "gpiochip0:4", "value": "L" },
+        { "name": "gpiochip0:5", "value": "L" },
+        { "name": "gpiochip0:6", "value": "L" },
+        { "name": "gpiochip0:7", "value": "L" }
+      ]
+    },
+    {
+      "name": "gpiochip1",
+      "lines": [
+        { "name": "gpiochip1:0", "value": "L" },
+        { "name": "gpiochip1:1", "value": "L" },
+        { "name": "gpiochip1:2", "value": "L" },
+        { "name": "gpiochip1:3", "value": "L" },
+        { "name": "gpiochip1:4", "value": "L" },
+        { "name": "gpiochip1:5", "value": "L" },
+        { "name": "gpiochip1:6", "value": "L" },
+        { "name": "gpiochip1:7", "value": "L" }
+      ]
+    }
+  ]
+}

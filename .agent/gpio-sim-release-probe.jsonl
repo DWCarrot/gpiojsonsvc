@@ -1,0 +1,48 @@
+{"effective_uid": 1000, "kernel": "6.18.40.1-microsoft-standard-WSL2", "kind": "environment", "libgpiod": "2.1.3", "observer": "read-only gpio-sim sysfs value/pull"}
+{"chip": "gpiochip0", "kind": "original", "offset": 7, "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/pull_low_set_high", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/pull_low_set_high", "kind": "observation", "logical": 1, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-down", "used": true, "value": 1}}
+{"case": "gpiochip0:7/pull_low_set_high", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/pull_low_set_high", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/pull_low_set_high", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/pull_high_set_low", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/pull_high_set_low", "kind": "observation", "logical": 0, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-up", "used": true, "value": 0}}
+{"case": "gpiochip0:7/pull_high_set_low", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/pull_high_set_low", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/pull_high_set_low", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/before_low_output_bias_high_set_low", "kind": "observation", "logical": 0, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-up", "used": true, "value": 0}}
+{"case": "gpiochip0:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip0:7/close_chip_first", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/close_chip_first", "kind": "observation", "logical": 1, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-down", "used": true, "value": 1}}
+{"case": "gpiochip0:7/close_chip_first", "kind": "observation", "stage": "chip_closed_request_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-down", "used": true, "value": 1}}
+{"case": "gpiochip0:7/close_chip_first", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/close_chip_first", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip0:7/close_chip_first", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"chip": "gpiochip0", "kind": "restored", "offset": 7, "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"chip": "gpiochip1", "kind": "original", "offset": 7, "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/pull_low_set_high", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/pull_low_set_high", "kind": "observation", "logical": 1, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-down", "used": true, "value": 1}}
+{"case": "gpiochip1:7/pull_low_set_high", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/pull_low_set_high", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/pull_low_set_high", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/pull_high_set_low", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/pull_high_set_low", "kind": "observation", "logical": 0, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-up", "used": true, "value": 0}}
+{"case": "gpiochip1:7/pull_high_set_low", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/pull_high_set_low", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/pull_high_set_low", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/before_low_output_bias_high_set_low", "kind": "observation", "logical": 0, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-up", "used": true, "value": 0}}
+{"case": "gpiochip1:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/before_low_output_bias_high_set_low", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-up", "used": false, "value": 1}}
+{"case": "gpiochip1:7/close_chip_first", "kind": "observation", "stage": "before_request", "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/close_chip_first", "kind": "observation", "logical": 1, "stage": "after_set_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-down", "used": true, "value": 1}}
+{"case": "gpiochip1:7/close_chip_first", "kind": "observation", "stage": "chip_closed_request_held", "state": {"consumer": "gpiojsonsvc-release-research", "direction": "output", "pull": "pull-down", "used": true, "value": 1}}
+{"case": "gpiochip1:7/close_chip_first", "kind": "observation", "stage": "request_released", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/close_chip_first", "kind": "observation", "stage": "both_closed", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"case": "gpiochip1:7/close_chip_first", "kind": "observation", "stage": "both_closed_after_100ms", "state": {"consumer": null, "direction": "output", "pull": "pull-down", "used": false, "value": 0}}
+{"chip": "gpiochip1", "kind": "restored", "offset": 7, "state": {"consumer": null, "direction": "input", "pull": "pull-down", "used": false, "value": 0}}
+{"cases": 8, "kind": "result", "status": "PASS"}

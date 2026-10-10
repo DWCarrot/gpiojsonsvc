@@ -10,3 +10,27 @@
 
 Pending fix: validate and deduplicate the full selection before GPIO I/O, reuse one snapshot per `(device, line)`, and add context to inspection errors.
 
+## Restore `final`-value test coverage after the gpio-sim refactor
+
+Deferred by user decision on 2026-10-10. The current refactor may proceed without
+migrating or adding dedicated `final`-value tests. Keep production final-write
+behavior; keep shutdown, socket cleanup, ownership release, and re-acquisition
+tests. Existing protocol parsing/validation coverage does not need to be removed.
+
+Reason: gpio-sim restores its current pull level when the line request is
+released. Reading the value after disconnect or shutdown cannot prove that a
+`final` write occurred. See `.agent/gpio-sim-release-experiment.md` for the direct
+libgpiod experiment and `.agent/gpio-sim-test-feasibility.md` for the named inventory.
+
+- [ ] Restore dedicated final-batch compilation/broadcast and application tests.
+- [ ] Restore final-write assertions for disconnect, service shutdown, and SIGINT,
+      including combined outputs and omitted-final behavior in mixed smoke cases.
+- [ ] Choose a reliable observation method before re-enabling those assertions:
+      retain the request while checking application, or record writes before
+      release for full close-path coverage. Do not infer success from the
+      post-release pull value or add a production teardown delay solely for tests.
+
+During migration, explicitly mark retained final-only tests as ignored with a
+TODO reason, or track removed mock-dependent cases in the inventory. Mixed tests
+should continue exercising their initial/set/query/lifecycle assertions. Deferred
+coverage is not a passing test and is not a blocker for this refactor's acceptance.
